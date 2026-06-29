@@ -1,0 +1,41 @@
+{
+  "name": "yet-another-player",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:tauri": "tauri build",
+    "build:windows": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis",
+    "build:windows:release": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json",
+    "build:windows:native": "tauri build --target x86_64-pc-windows-msvc --bundles nsis",
+    "build:windows:native:release": "tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json",
+    "preview": "vite preview",
+    "tauri": "./scripts/run-with-wsl-audio.sh tauri"
+  },
+  "dependencies": {
+    "@fontsource/onest": "^5.2.11",
+    "@tanstack/react-router": "^1.170.15",
+    "@tanstack/react-router-devtools": "^1.167.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "~2",
+    "@tauri-apps/plugin-fs": "~2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "~2",
+    "@tauri-apps/plugin-store": "~2",
+    "@tauri-apps/plugin-updater": "~2",
+    "framer-motion": "^12.40.0",
+    "jotai": "^2.20.1",
+    "preact": "^10.25.1"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.9.3",
+    "@tailwindcss/vite": "^4.3.1",
+    "@tanstack/router-plugin": "^1.168.18",
+    "@tauri-apps/cli": "^2",
+    "tailwindcss": "^4.3.1",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3"
+  }
+}

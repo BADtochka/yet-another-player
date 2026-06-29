@@ -1,0 +1,43 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows NSIS installer from Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install cross-compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm nsis
+          cargo install cargo-xwin
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Windows NSIS installer
+        run: bun run build:windows
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-installer
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

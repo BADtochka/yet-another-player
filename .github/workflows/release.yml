@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release-windows:
+    name: Publish Windows release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install cross-compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm nsis
+          cargo install cargo-xwin
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: yet-another-player ${{ github.ref_name }}
+          releaseBody: |
+            Download `yet-another-player_*_x64-setup.exe` for Windows.
+
+            Installed apps check GitHub Releases for updates automatically.
+          releaseDraft: true
+          prerelease: false
+          updaterJsonPreferNsis: true
+          tauriScript: bunx tauri
+          args: >-
+            --runner cargo-xwin
+            --target x86_64-pc-windows-msvc
+            --bundles nsis
+            --config src-tauri/tauri.release.conf.json
