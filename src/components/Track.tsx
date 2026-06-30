@@ -1,6 +1,6 @@
 import { useSetAtom } from 'jotai';
-import { currentTrackAtom, playingAtom } from '../atoms/music';
-import { type Track as TrackType } from '../types/Track';
+import { currentTrackAtom, playingAtom } from '@/atoms/music';
+import { type Track as TrackType } from '@/types/Track';
 
 type TrackProps = {
   track: TrackType;

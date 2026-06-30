@@ -2,12 +2,12 @@ import { createRootRoute, Outlet, useLocation, useNavigate } from '@tanstack/rea
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 
 import { useEffect, useState } from 'preact/hooks';
-import { FlexLogo } from '../components/FlexLogo';
-import { NavBar } from '../components/NavBar';
-import { PlayerControls } from '../components/PlayerControls';
-import { WindowBar } from '../components/WindowBar';
-import { checkForAppUpdates } from '../utils/checkForUpdates';
-import { prepareStore } from '../utils/prepareStore';
+import { FlexLogo } from '@/components/FlexLogo';
+import { NavBar } from '@/components/NavBar';
+import { PlayerControls } from '@/components/PlayerControls';
+import { WindowBar } from '@/components/WindowBar';
+import { checkForAppUpdates } from '@/utils/checkForUpdates';
+import { prepareStore } from '@/utils/prepareStore';
 
 const RootLayout = () => {
   const [storeLoaded, setStoreLoaded] = useState(false);

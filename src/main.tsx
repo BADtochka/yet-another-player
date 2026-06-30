@@ -1,8 +1,8 @@
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { render } from 'preact';
-import './styles.css';
+import '@/styles.css';
 
-import { routeTree } from './routeTree.gen';
+import { routeTree } from '@/routeTree.gen';
 
 const router = createRouter({ routeTree });
 

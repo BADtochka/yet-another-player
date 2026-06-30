@@ -1,6 +1,6 @@
 import { load } from '@tauri-apps/plugin-store';
-import { registerMusicRoot, warmupAudioServer } from './audioServer';
-import { warmupPlayback } from './warmupPlayback';
+import { registerMusicRoot, warmupAudioServer } from '@/utils/audioServer';
+import { warmupPlayback } from '@/utils/warmupPlayback';
 
 export const prepareStore = async () => {
   const settings = await load('settings.json', {

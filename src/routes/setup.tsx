@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useState } from 'preact/hooks';
-import { parseMusic } from '../utils/parseMusic';
+import { parseMusic } from '@/utils/parseMusic';
 
 export const Route = createFileRoute('/setup')({
   component: RouteComponent,

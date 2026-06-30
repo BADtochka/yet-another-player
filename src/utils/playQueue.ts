@@ -1,4 +1,4 @@
-import { type Track } from '../types/Track';
+import { type Track } from '@/types/Track';
 
 const trackIndex = (tracks: Track[], current: Track | null) => {
   if (!current) {

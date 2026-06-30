@@ -1,4 +1,4 @@
-import { Slider, type SliderProps } from './Slider';
+import { Slider, type SliderProps } from '@/components/Slider';
 
 export type SeekBarProps = Omit<SliderProps, 'showThumb' | 'onDragStart' | 'onValueChange' | 'onValueCommit'> & {
   onSeekStart?: () => void;

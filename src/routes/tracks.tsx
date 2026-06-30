@@ -2,9 +2,9 @@ import { createFileRoute } from '@tanstack/react-router';
 import { load } from '@tauri-apps/plugin-store';
 import { useAtom } from 'jotai';
 import { useEffect, useState } from 'preact/hooks';
-import { tracksAtom } from '../atoms/music';
-import { Track } from '../components/Track';
-import { type Track as TrackType } from '../types/Track';
+import { tracksAtom } from '@/atoms/music';
+import { Track } from '@/components/Track';
+import { type Track as TrackType } from '@/types/Track';
 
 const Tracks = () => {
   const [tracks, setTracks] = useAtom(tracksAtom);

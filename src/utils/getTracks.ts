@@ -1,6 +1,6 @@
 import { join } from '@tauri-apps/api/path';
 import { open, readDir, stat } from '@tauri-apps/plugin-fs';
-import { type Track } from '../types/Track';
+import { type Track } from '@/types/Track';
 
 const ID3_HEADER_SIZE = 10;
 const METADATA_CHUNK_SIZE = 1024 * 1024;

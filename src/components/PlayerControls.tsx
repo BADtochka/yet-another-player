@@ -8,17 +8,17 @@ import {
   playPreviousAtom,
   seekingAtom,
   volumeAtom,
-} from '../atoms/music';
-import { Next } from './Icons/Next';
-import { Pause } from './Icons/Pause';
-import { Play } from './Icons/Play';
-import { Previous } from './Icons/Previous';
-import { Repeat } from './Icons/Repeat';
-import { Shuffle } from './Icons/Shuffle';
-import { SeekBar } from './SeekBar';
-import { SliderFrame } from './Slider';
-import { TrackPlaying } from './TrackPlaying';
-import { VolumeBar } from './VolumeBar';
+} from '@/atoms/music';
+import { Next } from '@/components/Icons/Next';
+import { Pause } from '@/components/Icons/Pause';
+import { Play } from '@/components/Icons/Play';
+import { Previous } from '@/components/Icons/Previous';
+import { Repeat } from '@/components/Icons/Repeat';
+import { Shuffle } from '@/components/Icons/Shuffle';
+import { SeekBar } from '@/components/SeekBar';
+import { SliderFrame } from '@/components/Slider';
+import { TrackPlaying } from '@/components/TrackPlaying';
+import { VolumeBar } from '@/components/VolumeBar';
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) {

@@ -8,9 +8,9 @@ import {
   playNextAtom,
   seekingAtom,
   volumeAtom,
-} from '../atoms/music';
-import { type Track } from '../types/Track';
-import { getAudioSrc } from '../utils/audioServer';
+} from '@/atoms/music';
+import { type Track } from '@/types/Track';
+import { getAudioSrc } from '@/utils/audioServer';
 
 type TrackPlayingProps = {
   track: Track | null;

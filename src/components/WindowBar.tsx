@@ -1,8 +1,8 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
-import { WindowClose } from './Icons/WindowClose';
-import { WindowMaximize } from './Icons/WindowMaximize';
-import { WindowMinimize } from './Icons/WindowMinimize';
+import { WindowClose } from '@/components/Icons/WindowClose';
+import { WindowMaximize } from '@/components/Icons/WindowMaximize';
+import { WindowMinimize } from '@/components/Icons/WindowMinimize';
 
 export const WindowBar = () => {
   const appWindow = getCurrentWindow();

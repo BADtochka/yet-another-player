@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   release-windows:
     name: Publish Windows release
@@ -53,4 +56,4 @@ jobs:
             --runner cargo-xwin
             --target x86_64-pc-windows-msvc
             --bundles nsis
-            --config src-tauri/tauri.release.conf.json
+            --config ./src-tauri/tauri.release.conf.json

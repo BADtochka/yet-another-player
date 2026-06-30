@@ -1,4 +1,4 @@
-import { type Artist } from './Artist';
+import { type Artist } from '@/types/Artist';
 
 export type Track = {
   name: string;

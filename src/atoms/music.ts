@@ -1,6 +1,6 @@
 import { atom } from 'jotai';
-import { type Track } from '../types/Track';
-import { getNextTrack, getPreviousTrack } from '../utils/playQueue';
+import { type Track } from '@/types/Track';
+import { getNextTrack, getPreviousTrack } from '@/utils/playQueue';
 
 export const tracksAtom = atom<Track[]>([]);
 export const volumeAtom = atom<number>(0.1);

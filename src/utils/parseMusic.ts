@@ -1,6 +1,6 @@
 import { load } from '@tauri-apps/plugin-store';
-import { registerMusicRoot } from './audioServer';
-import { getTracks } from './getTracks';
+import { registerMusicRoot } from '@/utils/audioServer';
+import { getTracks } from '@/utils/getTracks';
 
 export const parseMusic = async (path?: string) => {
   const musicStore = await load('music.json', {

@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'preact/hooks';
-import { VolumeMax } from './Icons/VolumeMax';
-import { VolumeMid } from './Icons/VolumeMid';
-import { VolumeMin } from './Icons/VolumeMin';
-import { VolumeMute } from './Icons/VolumeMute';
-import { Slider } from './Slider';
+import { VolumeMax } from '@/components/Icons/VolumeMax';
+import { VolumeMid } from '@/components/Icons/VolumeMid';
+import { VolumeMin } from '@/components/Icons/VolumeMin';
+import { VolumeMute } from '@/components/Icons/VolumeMute';
+import { Slider } from '@/components/Slider';
 
 export type VolumeBarProps = {
   value: number;
