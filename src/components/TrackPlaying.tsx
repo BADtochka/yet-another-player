@@ -1,16 +1,10 @@
-import { useAtomValue, useSetAtom } from 'jotai';
 import { TargetedEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import {
-  currentTimeAtom,
-  durationAtom,
-  playingAtom,
-  playNextAtom,
-  seekingAtom,
-  volumeAtom,
-} from '@/atoms/music';
+import { usePlayerStore } from '@/stores';
 import { type Track } from '@/types/Track';
-import { getAudioSrc } from '@/utils/audioServer';
+import { getAudioSrc, getCoverSrc } from '@/utils/audioServer';
+
+const FALLBACK_COVER = '/temp_cover.png';
 
 type TrackPlayingProps = {
   track: Track | null;
@@ -19,18 +13,19 @@ type TrackPlayingProps = {
 const TIME_UPDATE_INTERVAL_MS = 250;
 
 export const TrackPlaying = ({ track }: TrackPlayingProps) => {
-  const volume = useAtomValue(volumeAtom);
-  const playing = useAtomValue(playingAtom);
-  const seeking = useAtomValue(seekingAtom);
-  const currentTime = useAtomValue(currentTimeAtom);
-  const setDuration = useSetAtom(durationAtom);
-  const setCurrentTime = useSetAtom(currentTimeAtom);
-  const playNext = useSetAtom(playNextAtom);
+  const volume = usePlayerStore((state) => state.volume);
+  const playing = usePlayerStore((state) => state.playing);
+  const seeking = usePlayerStore((state) => state.seeking);
+  const currentTime = usePlayerStore((state) => state.currentTime);
+  const setDuration = usePlayerStore((state) => state.setDuration);
+  const setCurrentTime = usePlayerStore((state) => state.setCurrentTime);
+  const playNext = usePlayerStore((state) => state.playNext);
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastTimeUpdateRef = useRef(0);
   const wasSeekingRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
   const [src, setSrc] = useState<string | null>(null);
+  const [coverSrc, setCoverSrc] = useState(FALLBACK_COVER);
   const [ready, setReady] = useState(false);
 
   const applySeek = (time: number) => {
@@ -99,6 +94,31 @@ export const TrackPlaying = ({ track }: TrackPlayingProps) => {
       active = false;
     };
   }, [track?.path, setCurrentTime, setDuration]);
+
+  useEffect(() => {
+    if (!track) {
+      setCoverSrc(FALLBACK_COVER);
+      return;
+    }
+
+    let active = true;
+
+    void getCoverSrc(track.path)
+      .then((url) => {
+        if (active) {
+          setCoverSrc(url);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setCoverSrc(FALLBACK_COVER);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [track?.path]);
 
   useEffect(() => {
     if (!audioRef.current) {
@@ -191,8 +211,16 @@ export const TrackPlaying = ({ track }: TrackPlayingProps) => {
   return (
     <div className='flex items-center gap-4 absolute left-4'>
       <img
-        className='size-16 object-cover border border-[#21366C] rounded-lg'
-        src={track.coverBase64 || '/temp_cover.png'}
+        className='size-16 rounded-lg border border-[#21366C] object-cover'
+        src={coverSrc}
+        alt=''
+        onError={(event) => {
+          const image = event.currentTarget;
+
+          if (!image.src.includes('temp_cover.png')) {
+            image.src = FALLBACK_COVER;
+          }
+        }}
       />
       <div>
         <p>{track.name}</p>

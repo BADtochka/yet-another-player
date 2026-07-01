@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
+const FALLBACK_COVER = '/temp_cover.png';
+
 let baseUrlPromise: Promise<string> | null = null;
 
 const getBaseUrl = () => {
@@ -10,14 +12,10 @@ const getBaseUrl = () => {
   return baseUrlPromise;
 };
 
-export const registerMusicRoot = async (path: string) => {
-  const musicPath = path.trim();
+export const registerMusicRoots = async (paths: string[]) => {
+  const roots = paths.map((path) => path.trim()).filter(Boolean);
 
-  if (!musicPath) {
-    return;
-  }
-
-  await invoke('set_music_root', { path: musicPath });
+  await invoke('set_music_roots', { paths: roots });
 };
 
 export const warmupAudioServer = async () => {
@@ -28,6 +26,23 @@ export const warmupAudioServer = async () => {
   } catch {
     // Warmup is best-effort.
   }
+};
+
+export const getCoverSrc = async (path: string) => {
+  const baseUrl = await getBaseUrl();
+  const url = `${baseUrl}/cover?path=${encodeURIComponent(path)}`;
+
+  try {
+    const response = await fetch(url, { method: 'HEAD' });
+
+    if (response.ok) {
+      return url;
+    }
+  } catch {
+    // Fall back to the placeholder cover.
+  }
+
+  return FALLBACK_COVER;
 };
 
 export const getAudioSrc = async (path: string) => {

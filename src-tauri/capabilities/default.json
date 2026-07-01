@@ -16,7 +16,7 @@
     "fs:allow-read-dir",
     "fs:allow-read-file",
     "fs:allow-audio-read-recursive",
-    "store:default",
-    "dialog:default"
+    "dialog:default",
+    "zustand:default"
   ]
 }

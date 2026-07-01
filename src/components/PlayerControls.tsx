@@ -1,24 +1,14 @@
-import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-import {
-  currentTimeAtom,
-  currentTrackAtom,
-  durationAtom,
-  playingAtom,
-  playNextAtom,
-  playPreviousAtom,
-  seekingAtom,
-  volumeAtom,
-} from '@/atoms/music';
+import { SeekBar } from '@/components/SeekBar';
+import { SliderFrame } from '@/components/Slider';
+import { TrackPlaying } from '@/components/TrackPlaying';
+import { VolumeBar } from '@/components/VolumeBar';
 import { Next } from '@/components/Icons/Next';
 import { Pause } from '@/components/Icons/Pause';
 import { Play } from '@/components/Icons/Play';
 import { Previous } from '@/components/Icons/Previous';
 import { Repeat } from '@/components/Icons/Repeat';
 import { Shuffle } from '@/components/Icons/Shuffle';
-import { SeekBar } from '@/components/SeekBar';
-import { SliderFrame } from '@/components/Slider';
-import { TrackPlaying } from '@/components/TrackPlaying';
-import { VolumeBar } from '@/components/VolumeBar';
+import { usePlayerStore } from '@/stores';
 
 const formatTime = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) {
@@ -33,14 +23,17 @@ const formatTime = (seconds: number) => {
 };
 
 export const PlayerControls = () => {
-  const currentTrack = useAtomValue(currentTrackAtom);
-  const [playing, setPlaying] = useAtom(playingAtom);
-  const [time, setTime] = useAtom(currentTimeAtom);
-  const [, setSeeking] = useAtom(seekingAtom);
-  const [volume, setVolume] = useAtom(volumeAtom);
-  const playNext = useSetAtom(playNextAtom);
-  const playPrevious = useSetAtom(playPreviousAtom);
-  const duration = useAtomValue(durationAtom);
+  const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const playing = usePlayerStore((state) => state.playing);
+  const time = usePlayerStore((state) => state.currentTime);
+  const setPlaying = usePlayerStore((state) => state.setPlaying);
+  const setTime = usePlayerStore((state) => state.setCurrentTime);
+  const setSeeking = usePlayerStore((state) => state.setSeeking);
+  const volume = usePlayerStore((state) => state.volume);
+  const setVolume = usePlayerStore((state) => state.setVolume);
+  const playNext = usePlayerStore((state) => state.playNext);
+  const playPrevious = usePlayerStore((state) => state.playPrevious);
+  const duration = usePlayerStore((state) => state.duration);
   const sliderMax = Math.max(duration, 0.1);
   const sliderValue = Math.min(time, sliderMax);
 

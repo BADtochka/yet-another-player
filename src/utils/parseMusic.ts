@@ -1,35 +1,18 @@
-import { load } from '@tauri-apps/plugin-store';
-import { registerMusicRoot } from '@/utils/audioServer';
-import { getTracks } from '@/utils/getTracks';
+import { useMusicStore, useSettingsStore } from '@/stores';
+import { registerMusicRoots } from '@/utils/audioServer';
+import { getTracksFromFolders } from '@/utils/getTracks';
 
-export const parseMusic = async (path?: string) => {
-  const musicStore = await load('music.json', {
-    defaults: {
-      tracks: [],
-    },
-  });
-  const settingsStore = await load('settings.json', {
-    defaults: {
-      musicPath: '',
-    },
-  });
+export const parseMusic = async (folders?: string[]) => {
+  const musicFolders = folders ?? useSettingsStore.getState().musicFolders;
+  const validFolders = [...new Set(musicFolders.map((folder) => folder.trim()).filter(Boolean))];
 
-  const defaultFolder = await settingsStore?.get<string>('musicPath');
-  const musicPath = (path || defaultFolder || '').trim();
-
-  if (!musicPath) {
-    throw new Error('Music folder is not selected');
+  if (validFolders.length === 0) {
+    throw new Error('Music folders are not selected');
   }
 
-  await registerMusicRoot(musicPath);
+  await registerMusicRoots(validFolders);
 
-  const tracks = await getTracks(musicPath);
+  const tracks = await getTracksFromFolders(validFolders);
 
-  await musicStore.set('tracks', tracks);
-  await musicStore.save();
-
-  if (path) {
-    await settingsStore.set('musicPath', path);
-    await settingsStore.save();
-  }
+  useMusicStore.getState().setTracks(tracks);
 };

@@ -4,7 +4,7 @@ import { type Track } from '@/types/Track';
 
 const ID3_HEADER_SIZE = 10;
 const METADATA_CHUNK_SIZE = 1024 * 1024;
-const PARSE_CONCURRENCY = 12;
+const PARSE_CONCURRENCY = 24;
 const SKIP_DIR_NAMES = new Set(['.thumbnails', '.Trash', '$RECYCLE.BIN', 'System Volume Information']);
 const TEXT_FRAME_IDS = new Set(['TIT2', 'TPE1', 'TALB', 'TYER', 'TDRC', 'TLEN']);
 
@@ -69,70 +69,6 @@ const decodeText = (bytes: Uint8Array) => {
   }
 
   return trimText(latin1Decoder.decode(payload));
-};
-
-const textTerminatorLength = (encoding: number) => (encoding === 1 || encoding === 2 ? 2 : 1);
-
-const findTerminator = (bytes: Uint8Array, offset: number, encoding: number) => {
-  const terminatorLength = textTerminatorLength(encoding);
-
-  for (let index = offset; index <= bytes.length - terminatorLength; index += terminatorLength) {
-    if (terminatorLength === 2) {
-      if (bytes[index] === 0 && bytes[index + 1] === 0) {
-        return index;
-      }
-
-      continue;
-    }
-
-    if (bytes[index] === 0) {
-      return index;
-    }
-  }
-
-  return -1;
-};
-
-const bytesToBase64 = (bytes: Uint8Array) => {
-  let binary = '';
-
-  for (let index = 0; index < bytes.length; index += 0x8000) {
-    binary += String.fromCharCode(...bytes.slice(index, index + 0x8000));
-  }
-
-  return btoa(binary);
-};
-
-const parseCover = (bytes: Uint8Array) => {
-  if (bytes.length < 4) {
-    return null;
-  }
-
-  const encoding = bytes[0];
-  let offset = 1;
-  const mimeEnd = findTerminator(bytes, offset, 0);
-
-  if (mimeEnd === -1) {
-    return null;
-  }
-
-  const mimeType = latin1Decoder.decode(bytes.slice(offset, mimeEnd)) || 'image/jpeg';
-  offset = mimeEnd + 1;
-
-  if (offset >= bytes.length) {
-    return null;
-  }
-
-  offset += 1;
-  const descriptionEnd = findTerminator(bytes, offset, encoding);
-  if (descriptionEnd === -1) {
-    return null;
-  }
-
-  offset = descriptionEnd + textTerminatorLength(encoding);
-  const image = bytes.slice(offset);
-
-  return image.length > 0 ? `data:${mimeType};base64,${bytesToBase64(image)}` : null;
 };
 
 const id3TagEnd = (bytes: Uint8Array) => {
@@ -245,7 +181,6 @@ const parseId3Tags = (bytes: Uint8Array, path: string): Track => {
     name: fallbackTrackName(path),
     artists: [],
     lyrics: [],
-    coverBase64: '',
     path,
     album: null,
     year: null,
@@ -287,10 +222,6 @@ const parseId3Tags = (bytes: Uint8Array, path: string): Track => {
         const milliseconds = Number.parseInt(value, 10);
         track.duration = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds / 1000 : null;
       }
-    }
-
-    if (frameId === 'APIC' && !track.coverBase64) {
-      track.coverBase64 = parseCover(frame) ?? '';
     }
 
     offset = frameEnd;
@@ -391,6 +322,21 @@ const parseTracks = async (paths: string[]) => {
 export const getTracks = async (path: string) => {
   const paths = await collectMp3Paths(path);
   const tracks = await parseTracks(paths);
+  tracks.sort((a, b) => a.path.localeCompare(b.path));
+
+  return tracks;
+};
+
+export const getTracksFromFolders = async (folders: string[]) => {
+  const uniqueFolders = [...new Set(folders.map((folder) => folder.trim()).filter(Boolean))];
+
+  if (uniqueFolders.length === 0) {
+    return [];
+  }
+
+  const pathSets = await Promise.all(uniqueFolders.map(collectMp3Paths));
+  const uniquePaths = [...new Set(pathSets.flat())];
+  const tracks = await parseTracks(uniquePaths);
   tracks.sort((a, b) => a.path.localeCompare(b.path));
 
   return tracks;

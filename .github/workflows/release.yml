@@ -35,6 +35,16 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - name: Set version from tag
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            echo "Version is set from git tags like v1.2.3. Push a tag to release." >&2
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          chmod +x ./scripts/set-version.sh
+          ./scripts/set-version.sh "$VERSION"
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:

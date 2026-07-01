@@ -1,23 +1,14 @@
-import { load } from '@tauri-apps/plugin-store';
-import { registerMusicRoot, warmupAudioServer } from '@/utils/audioServer';
+import { startStores, useSettingsStore } from '@/stores';
+import { warmupAudioServer } from '@/utils/audioServer';
 import { warmupPlayback } from '@/utils/warmupPlayback';
 
 export const prepareStore = async () => {
-  const settings = await load('settings.json', {
-    defaults: {
-      musicPath: '',
-    },
-  });
-  const music = await load('music.json', {
-    defaults: {
-      tracks: [],
-    },
-  });
-  const musicPath = (await settings.get<string>('musicPath'))?.trim() ?? '';
+  await startStores();
 
-  await registerMusicRoot(musicPath);
+  const hasMusicFolders = useSettingsStore.getState().musicFolders.length > 0;
+
   void warmupAudioServer();
   void warmupPlayback();
 
-  return { settings, music, musicPath };
+  return { hasMusicFolders };
 };

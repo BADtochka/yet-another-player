@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useState } from 'preact/hooks';
+import { useSettingsStore } from '@/stores';
 import { parseMusic } from '@/utils/parseMusic';
 
 export const Route = createFileRoute('/setup')({
@@ -8,6 +9,7 @@ export const Route = createFileRoute('/setup')({
 });
 
 function RouteComponent() {
+  const addMusicFolder = useSettingsStore((state) => state.addMusicFolder);
   const [musicLoaded, setMusicLoaded] = useState(false);
   const [musicPath, setMusicPath] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +33,8 @@ function RouteComponent() {
       }
 
       setMusicPath(selectedPath);
-      await parseMusic(selectedPath);
+      addMusicFolder(selectedPath);
+      await parseMusic();
       setMusicLoaded(true);
       await navigate({ to: '/tracks' });
     } catch (selectError) {

@@ -8,6 +8,7 @@ use tauri::Manager;
 use tauri::Url;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+mod cover;
 mod wsl_audio;
 
 struct RangeFile {
@@ -30,7 +31,8 @@ impl Read for RangeFile {
 
 struct AudioServerState {
     base_url: String,
-    root: Arc<Mutex<Option<PathBuf>>>,
+    roots: Arc<Mutex<Vec<PathBuf>>>,
+    cover_cache: Arc<Mutex<PathBuf>>,
     resolved_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
@@ -40,16 +42,24 @@ fn audio_server_base(state: tauri::State<AudioServerState>) -> String {
 }
 
 #[tauri::command]
-fn set_music_root(state: tauri::State<AudioServerState>, path: String) -> Result<(), String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Ok(());
+fn set_music_roots(state: tauri::State<AudioServerState>, paths: Vec<String>) -> Result<(), String> {
+    let mut roots = Vec::new();
+
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let canonical =
+            std::fs::canonicalize(PathBuf::from(trimmed)).map_err(|error| error.to_string())?;
+
+        if !roots.iter().any(|existing| existing == &canonical) {
+            roots.push(canonical);
+        }
     }
 
-    let canonical =
-        std::fs::canonicalize(PathBuf::from(trimmed)).map_err(|error| error.to_string())?;
-
-    *state.root.lock().map_err(|error| error.to_string())? = Some(canonical);
+    *state.roots.lock().map_err(|error| error.to_string())? = roots;
     state
         .resolved_paths
         .lock()
@@ -114,8 +124,15 @@ fn resolve_path(url: &str, state: &AudioServerState) -> Option<PathBuf> {
         return None;
     }
 
-    let root = state.root.lock().ok()?.clone()?;
-    if !canonical.starts_with(&root) {
+    let roots = state.roots.lock().ok()?;
+    if roots.is_empty() {
+        return None;
+    }
+
+    if !roots
+        .iter()
+        .any(|root| canonical.starts_with(root))
+    {
         return None;
     }
 
@@ -154,7 +171,56 @@ fn respond_with_cors<R: Read + Send + 'static>(request: Request, response: Respo
     let _ = request.respond(with_cors(response));
 }
 
-fn handle_request(request: Request, state: &AudioServerState) {
+fn handle_cover_request(request: Request, state: &AudioServerState) {
+    if request.method() == &Method::Options {
+        respond_with_cors(request, Response::empty(204));
+        return;
+    }
+
+    let Some(path) = resolve_path(request.url(), state) else {
+        respond_with_cors(
+            request,
+            Response::from_string("forbidden").with_status_code(403),
+        );
+        return;
+    };
+
+    let cover_cache = match state.cover_cache.lock() {
+        Ok(cache) => cache.clone(),
+        Err(_) => {
+            respond_with_cors(
+                request,
+                Response::from_string("error").with_status_code(500),
+            );
+            return;
+        }
+    };
+
+    let Some((image, content_type)) = cover::load_cover(&path, &cover_cache) else {
+        respond_with_cors(
+            request,
+            Response::from_string("not found").with_status_code(404),
+        );
+        return;
+    };
+
+    let is_head = request.method() == &Method::Head;
+
+    if is_head {
+        let response = Response::empty(200)
+            .with_header(header("Content-Type", content_type))
+            .with_header(header("Cache-Control", "public, max-age=31536000, immutable"));
+        respond_with_cors(request, response);
+        return;
+    }
+
+    let response = Response::from_data(image)
+        .with_header(header("Content-Type", content_type))
+        .with_header(header("Cache-Control", "public, max-age=31536000, immutable"));
+    respond_with_cors(request, response);
+}
+
+fn handle_stream_request(request: Request, state: &AudioServerState) {
     if request.method() == &Method::Options {
         respond_with_cors(request, Response::empty(204));
         return;
@@ -230,6 +296,17 @@ fn handle_request(request: Request, state: &AudioServerState) {
     }
 }
 
+fn handle_request(request: Request, state: &AudioServerState) {
+    let url = request.url();
+
+    if url.starts_with("/cover") {
+        handle_cover_request(request, state);
+        return;
+    }
+
+    handle_stream_request(request, state);
+}
+
 fn start_audio_server(state: Arc<AudioServerState>, server: Arc<Server>) {
     for _ in 0..8 {
         let server = Arc::clone(&server);
@@ -247,7 +324,8 @@ fn start_audio_server(state: Arc<AudioServerState>, server: Arc<Server>) {
 pub fn run() {
     wsl_audio::configure();
 
-    let root: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let roots: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+    let cover_cache = Arc::new(Mutex::new(PathBuf::new()));
     let resolved_paths = Arc::new(Mutex::new(HashMap::new()));
 
     let server = Server::http("127.0.0.1:0")
@@ -260,34 +338,55 @@ pub fn run() {
         .expect("failed to resolve audio server port");
     let base_url = format!("http://127.0.0.1:{port}");
 
+    let server = Arc::new(server);
     let server_state = Arc::new(AudioServerState {
         base_url: base_url.clone(),
-        root: Arc::clone(&root),
+        roots: Arc::clone(&roots),
+        cover_cache: Arc::clone(&cover_cache),
         resolved_paths: Arc::clone(&resolved_paths),
     });
 
-    start_audio_server(Arc::clone(&server_state), Arc::new(server));
+    let server_for_setup = Arc::clone(&server);
+    let server_state_for_setup = Arc::clone(&server_state);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AudioServerState {
             base_url,
-            root,
+            roots,
+            cover_cache,
             resolved_paths,
         })
+        .plugin(tauri_plugin_zustand::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
+            let cache_dir = app
+                .path()
+                .app_cache_dir()
+                .map_err(|error| error.to_string())?
+                .join("covers");
+
+            std::fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
+
+            if let Some(state) = app.try_state::<AudioServerState>() {
+                *state
+                    .cover_cache
+                    .lock()
+                    .map_err(|error| error.to_string())? = cache_dir;
+            }
+
+            start_audio_server(server_state_for_setup, server_for_setup);
+
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
                 window.open_devtools();
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![audio_server_base, set_music_root])
+        .invoke_handler(tauri::generate_handler![audio_server_base, set_music_roots])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

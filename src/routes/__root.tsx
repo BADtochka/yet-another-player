@@ -15,10 +15,10 @@ const RootLayout = () => {
   const { pathname } = useLocation();
 
   const warmApp = async () => {
-    const { musicPath } = await prepareStore();
+    const { hasMusicFolders } = await prepareStore();
     setStoreLoaded(true);
 
-    if (!musicPath && pathname !== '/setup') {
+    if (!hasMusicFolders && pathname !== '/setup') {
       await navigate({ to: '/setup' });
     }
   };
