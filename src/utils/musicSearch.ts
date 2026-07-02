@@ -6,6 +6,10 @@ import {
   getFfmpegLocation,
   getYtDlpCommandName,
 } from '@/utils/externalTools';
+import { concatBytes, decodeShellOutput, getYtDlpShellOptions, ShellLineDecoder } from '@/utils/shellEncoding';
+
+const createYtDlpCommand = (args: string[]) =>
+  Command.create(getYtDlpCommandName(), args, getYtDlpShellOptions());
 
 export type MusicSearchResult = {
   id: string;
@@ -94,17 +98,19 @@ const normalizeYtDlpError = (stderr: string) => {
 const executeYtDlp = async (args: string[], options?: { allowPartialStdout?: boolean }) => {
   await ensureYtDlpInstalled();
 
-  const output = await Command.create(getYtDlpCommandName(), args).execute();
+  const output = await createYtDlpCommand(args).execute();
 
   if (output.code !== 0) {
-    if (options?.allowPartialStdout && output.stdout.trim()) {
-      return output.stdout;
+    const stdout = decodeShellOutput(output.stdout);
+
+    if (options?.allowPartialStdout && stdout.trim()) {
+      return stdout;
     }
 
-    throw new Error(normalizeYtDlpError(output.stderr));
+    throw new Error(normalizeYtDlpError(decodeShellOutput(output.stderr)));
   }
 
-  return output.stdout;
+  return decodeShellOutput(output.stdout);
 };
 
 const parseDownloadProgress = (line: string): MusicDownloadProgress | null => {
@@ -149,12 +155,17 @@ const executeYtDlpStreaming = async (
 ) => {
   await ensureYtDlpInstalled();
 
-  const command = Command.create(getYtDlpCommandName(), args);
-  let stderr = '';
+  const command = createYtDlpCommand(args);
+  const stdoutDecoder = new ShellLineDecoder();
+  let stderrBytes = new Uint8Array(0);
   let downloadedPath: string | null = null;
 
+  const appendStderr = (chunk: Uint8Array) => {
+    stderrBytes = concatBytes(stderrBytes, chunk);
+  };
+
   command.stdout.on('data', (chunk) => {
-    for (const line of chunk.split('\n')) {
+    stdoutDecoder.push(chunk, (line) => {
       const progress = parseDownloadProgress(line);
       const path = parseDownloadedPath(line);
 
@@ -165,21 +176,34 @@ const executeYtDlpStreaming = async (
       if (path) {
         downloadedPath = path;
       }
-    }
+    });
   });
 
   command.stderr.on('data', (chunk) => {
-    stderr += chunk;
+    appendStderr(chunk);
   });
 
   await new Promise<void>((resolve, reject) => {
     command.on('close', (data) => {
+      stdoutDecoder.flush((line) => {
+        const progress = parseDownloadProgress(line);
+        const path = parseDownloadedPath(line);
+
+        if (progress) {
+          onProgress?.(progress);
+        }
+
+        if (path) {
+          downloadedPath = path;
+        }
+      });
+
       if (data.code === 0) {
         resolve();
         return;
       }
 
-      reject(new Error(normalizeYtDlpError(stderr)));
+      reject(new Error(normalizeYtDlpError(decodeShellOutput(stderrBytes))));
     });
 
     command.on('error', (error) => reject(new Error(error)));
@@ -246,6 +270,7 @@ export const downloadMusic = async (
     '--no-playlist',
     '--no-warnings',
     '--newline',
+    '--windows-filenames',
     '-o',
     outputTemplate,
     result.webpageUrl,

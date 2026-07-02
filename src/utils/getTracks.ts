@@ -25,7 +25,6 @@ type TrackScanOptions = {
 };
 
 const latin1Decoder = new TextDecoder('latin1');
-const utf8Decoder = new TextDecoder('utf-8');
 const utf16LeDecoder = new TextDecoder('utf-16le');
 const utf16BeDecoder = new TextDecoder('utf-16be');
 
@@ -85,7 +84,7 @@ const decodeText = (bytes: Uint8Array) => {
   }
 
   if (encoding === 3) {
-    return trimText(utf8Decoder.decode(payload));
+    return trimText(new TextDecoder('utf-8', { fatal: false }).decode(payload));
   }
 
   return trimText(latin1Decoder.decode(payload));

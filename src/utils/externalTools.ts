@@ -4,6 +4,7 @@ import { fetch } from '@tauri-apps/plugin-http';
 import { Command } from '@tauri-apps/plugin-shell';
 import JSZip from 'jszip';
 import { logError, logInfo } from '@/utils/appLogs';
+import { decodeShellOutput, getYtDlpShellOptions } from '@/utils/shellEncoding';
 
 export type ExternalTool = 'yt-dlp' | 'ffmpeg';
 
@@ -122,8 +123,13 @@ export const getExternalToolStatus = async (tool: ExternalTool): Promise<Externa
   if (installed) {
     try {
       const commandName = tool === FFMPEG ? getFfmpegCommandName() : getYtDlpCommandName();
-      const output = await Command.create(commandName, [tool === FFMPEG ? '-version' : '--version']).execute();
-      version = output.code === 0 ? output.stdout.trim() || null : null;
+      const versionArg = tool === FFMPEG ? '-version' : '--version';
+      const output =
+        tool === YT_DLP
+          ? await Command.create(commandName, [versionArg], getYtDlpShellOptions()).execute()
+          : await Command.create(commandName, [versionArg]).execute();
+      const stdout = decodeShellOutput(output.stdout);
+      version = output.code === 0 ? stdout.trim() || null : null;
     } catch {
       version = null;
     }
