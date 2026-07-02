@@ -55,6 +55,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+Or run **Windows build** manually in Actions, set **release tag** to `v0.1.0`, and pick the tag ref to build from.
+
 The `Windows build` workflow compiles the NSIS installer on tags, uploads `latest.json` and signatures, and creates a draft GitHub Release.
 
 ## WSL Dev Audio

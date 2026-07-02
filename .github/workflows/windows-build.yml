@@ -6,9 +6,14 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to publish (e.g. v0.0.3). Required for manual release uploads.'
+        required: false
+        type: string
 
 concurrency:
-  group: windows-${{ github.workflow }}-${{ github.ref }}
+  group: windows-${{ github.workflow }}-${{ github.event.inputs.release_tag || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -17,10 +22,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      release_tag: ${{ steps.release.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -58,9 +74,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.release.outputs.tag != ''
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ steps.release.outputs.tag }}"
+          VERSION="${VERSION#v}"
           chmod +x ./scripts/set-version.sh
           ./scripts/set-version.sh "$VERSION"
 
@@ -69,7 +86,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ -n "${{ steps.release.outputs.tag }}" ]]; then
             bun run build:windows:release
           else
             bun run build:windows
@@ -85,7 +102,7 @@ jobs:
   publish-release:
     name: Publish Windows release
     needs: build-windows
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.build-windows.outputs.release_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -100,8 +117,8 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: yet-another-player ${{ github.ref_name }}
+          tag_name: ${{ needs.build-windows.outputs.release_tag }}
+          name: yet-another-player ${{ needs.build-windows.outputs.release_tag }}
           draft: true
           prerelease: false
           body: |
