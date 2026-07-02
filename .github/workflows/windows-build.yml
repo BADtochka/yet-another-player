@@ -49,10 +49,16 @@ jobs:
           workspaces: src-tauri
           shared-key: xwin-msvc
 
-      - name: Install cargo-xwin
-        uses: taiki-e/cache-cargo-install-action@v1
+      - name: Cache cargo-xwin
+        id: cache-cargo-xwin
+        uses: actions/cache@v4
         with:
-          tool: cargo-xwin
+          path: ~/.cargo/bin/cargo-xwin
+          key: cargo-xwin-${{ runner.os }}-1
+
+      - name: Install cargo-xwin
+        if: steps.cache-cargo-xwin.outputs.cache-hit != 'true'
+        run: cargo install cargo-xwin --locked
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm nsis
