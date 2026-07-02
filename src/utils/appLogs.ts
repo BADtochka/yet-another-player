@@ -1,6 +1,7 @@
 import { appConfigDir, join } from '@tauri-apps/api/path';
 import { mkdir, open } from '@tauri-apps/plugin-fs';
 import { openPath } from '@tauri-apps/plugin-opener';
+import { toast } from '@/utils/toast';
 
 type LogLevel = 'error' | 'info' | 'warn';
 
@@ -72,10 +73,12 @@ export const installGlobalLogHandlers = () => {
 
   window.addEventListener('error', (event) => {
     logError('Unhandled window error', event.error ?? event.message);
+    toast.error('Произошла ошибка', event.error ?? event.message);
   });
 
   window.addEventListener('unhandledrejection', (event) => {
     logError('Unhandled promise rejection', event.reason);
+    toast.error('Произошла ошибка', event.reason);
   });
 };
 

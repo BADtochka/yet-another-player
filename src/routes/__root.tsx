@@ -2,6 +2,7 @@ import { createRootRoute, Outlet, useLocation, useNavigate } from '@tanstack/rea
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 
 import { useEffect, useState } from 'preact/hooks';
+import { AppToaster } from '@/components/AppToaster';
 import { FlexLogo } from '@/components/FlexLogo';
 import { NavBar } from '@/components/NavBar';
 import { PlayerControls } from '@/components/PlayerControls';
@@ -9,6 +10,7 @@ import { WindowBar } from '@/components/WindowBar';
 import { installGlobalLogHandlers } from '@/utils/appLogs';
 import { checkForAppUpdates } from '@/utils/checkForUpdates';
 import { prepareStore } from '@/utils/prepareStore';
+import { toast } from '@/utils/toast';
 
 const RootLayout = () => {
   const [storeLoaded, setStoreLoaded] = useState(false);
@@ -30,6 +32,7 @@ const RootLayout = () => {
 
     void warmApp().catch((error) => {
       console.error('Failed to prepare app store', error);
+      toast.error('Не удалось загрузить библиотеку', error);
       setStoreLoaded(true);
 
       if (pathname !== '/setup') {
@@ -49,6 +52,7 @@ const RootLayout = () => {
         <PlayerControls />
       </div>
       <TanStackRouterDevtools />
+      <AppToaster />
     </>
   );
 };

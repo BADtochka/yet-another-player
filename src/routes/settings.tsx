@@ -3,6 +3,7 @@ import { ExternalToolsSettings } from '@/components/Settings/ExternalToolsSettin
 import { MediaFoldersSettings } from '@/components/Settings/MediaFoldersSettings';
 import { SelectSettings } from '@/components/Settings/SelectSettings';
 import { SwitchSettings } from '@/components/Settings/SwitchSettings';
+import { UpdateSettings } from '@/components/Settings/UpdateSettings';
 import { useSettingsStore } from '@/stores';
 import { createFileRoute } from '@tanstack/react-router';
 
@@ -21,6 +22,7 @@ function RouteComponent() {
       <MediaFoldersSettings />
       <ExternalToolsSettings />
       <DiagnosticsSettings />
+      <UpdateSettings />
       <SwitchSettings
         label='Установить одну громкость для всех треков'
         checked={volumeNormEnabled}
