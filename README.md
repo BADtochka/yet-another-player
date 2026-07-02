@@ -55,7 +55,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The `Release` workflow builds the NSIS installer, uploads it to GitHub Releases, and publishes `latest.json` for the in-app updater.
+The `Windows build` workflow compiles the NSIS installer on tags, uploads `latest.json` and signatures, and creates a draft GitHub Release.
 
 ## WSL Dev Audio
 

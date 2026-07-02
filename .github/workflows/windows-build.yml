@@ -1,15 +1,22 @@
 name: Windows build
 
 on:
-  push:
-    branches: [main, master]
   pull_request:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-windows:
-    name: Build Windows NSIS installer from Linux
+    name: Build Windows NSIS installer
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -20,24 +27,85 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install cross-compile dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld llvm nsis
-          cargo install cargo-xwin
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: xwin-msvc
+
+      - name: Install cargo-xwin
+        uses: taiki-e/cache-cargo-install-action@v1
+        with:
+          tool: cargo-xwin
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm nsis
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build Windows NSIS installer
-        run: bun run build:windows
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          chmod +x ./scripts/set-version.sh
+          ./scripts/set-version.sh "$VERSION"
 
-      - name: Upload Windows installer
+      - name: Build Windows NSIS installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            bun run build:windows:release
+          else
+            bun run build:windows
+          fi
+
+      - name: Upload NSIS bundle
         uses: actions/upload-artifact@v4
         with:
-          name: windows-nsis-installer
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          name: windows-nsis-bundle
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
           if-no-files-found: error
+
+  publish-release:
+    name: Publish Windows release
+    needs: build-windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download NSIS bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-nsis-bundle
+          path: release-assets
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: yet-another-player ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          body: |
+            Download `yet-another-player_*_x64-setup.exe` for Windows.
+
+            Installed apps check GitHub Releases for updates automatically.
+          files: release-assets/*
