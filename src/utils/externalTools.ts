@@ -287,7 +287,8 @@ const extractArchiveBinary = async (
   destinationPath: string,
 ) => {
   const normalizedMember = member.replace(/^\.\//, '');
-  const fileName = normalizedMember.split('/').at(-1);
+  const parts = normalizedMember.split('/');
+  const fileName = parts[parts.length - 1];
 
   if (!fileName) {
     throw new Error(`Не удалось определить имя файла в архиве: ${member}`);
