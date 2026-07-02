@@ -44,7 +44,7 @@ By default the app scans the system audio directory, for example `%USERPROFILE%\
 
 The app uses [Tauri updater](https://v2.tauri.app/plugin/updater/) and checks for updates on startup in production builds.
 
-1. Update the updater endpoint in `src-tauri/tauri.conf.json` if your GitHub repo URL differs from `bad/yet-another-player`.
+1. Update the updater endpoint in `src-tauri/tauri.conf.json` if your GitHub repo URL differs from `BADtochka/yet-another-player`.
 2. Add repository secrets for release signing:
    - `TAURI_SIGNING_PRIVATE_KEY` — full contents of `.tauri/signing.key` (generate with `bun run tauri signer generate -w .tauri/signing.key --ci`)
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — leave empty if the key has no password
