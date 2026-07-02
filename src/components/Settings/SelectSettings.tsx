@@ -18,6 +18,7 @@ export const SelectSettings = <T extends string = string>({
   return (
     <motion.div
       className='flex items-center justify-between gap-4'
+      initial={false}
       animate={{
         gap: open ? 10 : 0,
         height: open ? 'auto' : 0,

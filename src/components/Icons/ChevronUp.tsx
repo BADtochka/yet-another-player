@@ -6,10 +6,7 @@ interface IconProps extends SVGProps<SVGSVGElement> {
   size?: number;
 }
 
-const ChevronUpInner = forwardRef<SVGSVGElement, IconProps>(function ChevronUp(
-  { size = 24, ...props }: IconProps,
-  ref,
-) {
+const ChevronUpInner = forwardRef<SVGSVGElement, IconProps>(function ChevronUp({ size = 24, ...props }: IconProps) {
   return (
     <svg width={size} height={size} viewBox='0 0 24 24' fill='none' {...props}>
       <path

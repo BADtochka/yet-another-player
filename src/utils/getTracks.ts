@@ -7,12 +7,22 @@ const METADATA_CHUNK_SIZE = 1024 * 1024;
 const PARSE_CONCURRENCY = 24;
 const SKIP_DIR_NAMES = new Set(['.thumbnails', '.Trash', '$RECYCLE.BIN', 'System Volume Information']);
 const TEXT_FRAME_IDS = new Set(['TIT2', 'TPE1', 'TALB', 'TYER', 'TDRC', 'TLEN']);
+const AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'webm', 'ogg']);
 
 const MPEG1_LAYER3_BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
 const MPEG2_LAYER3_BITRATES = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
 const MPEG1_SAMPLE_RATES = [44100, 48000, 32000, 0];
 const MPEG2_SAMPLE_RATES = [22050, 24000, 16000, 0];
 const MPEG25_SAMPLE_RATES = [11025, 12000, 8000, 0];
+
+export type TrackScanProgress = {
+  current: number;
+  total: number | null;
+};
+
+type TrackScanOptions = {
+  onProgress?: (progress: TrackScanProgress) => void;
+};
 
 const latin1Decoder = new TextDecoder('latin1');
 const utf8Decoder = new TextDecoder('utf-8');
@@ -30,6 +40,16 @@ const fallbackTrackName = (path: string) => {
   const extensionIndex = fileName.lastIndexOf('.');
 
   return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
+};
+
+const audioExtension = (name: string) => {
+  const extensionIndex = name.lastIndexOf('.');
+
+  if (extensionIndex < 0) {
+    return null;
+  }
+
+  return name.slice(extensionIndex + 1).toLowerCase();
 };
 
 const syncSafeSize = (bytes: Uint8Array, offset: number) =>
@@ -242,7 +262,7 @@ const readMetadataChunk = async (path: string) => {
   }
 };
 
-const trackFromPath = async (path: string): Promise<Track> => {
+export const getTrackFromPath = async (path: string): Promise<Track> => {
   const [bytes, fileInfo] = await Promise.all([readMetadataChunk(path), stat(path)]);
   const track = parseId3Tags(bytes, path);
 
@@ -255,9 +275,11 @@ const trackFromPath = async (path: string): Promise<Track> => {
 
 const shouldSkipDirectory = (name: string) => SKIP_DIR_NAMES.has(name);
 
-const collectMp3Paths = async (root: string) => {
+const collectMp3Paths = async (root: string, options?: TrackScanOptions) => {
   const paths: string[] = [];
   const directories = [root];
+
+  options?.onProgress?.({ current: 0, total: null });
 
   while (directories.length > 0) {
     const directory = directories.pop();
@@ -290,8 +312,9 @@ const collectMp3Paths = async (root: string) => {
         continue;
       }
 
-      if (entry.isFile && entry.name.toLowerCase().endsWith('.mp3')) {
+      if (entry.isFile && AUDIO_EXTENSIONS.has(audioExtension(entry.name) ?? '')) {
         paths.push(path);
+        options?.onProgress?.({ current: paths.length, total: null });
       }
     }
   }
@@ -299,12 +322,16 @@ const collectMp3Paths = async (root: string) => {
   return paths;
 };
 
-const parseTracks = async (paths: string[]) => {
+const parseTracks = async (paths: string[], options?: TrackScanOptions) => {
   const tracks: Track[] = [];
+  let processed = 0;
+
+  options?.onProgress?.({ current: 0, total: paths.length });
 
   for (let index = 0; index < paths.length; index += PARSE_CONCURRENCY) {
     const batch = paths.slice(index, index + PARSE_CONCURRENCY);
-    const results = await Promise.allSettled(batch.map((path) => trackFromPath(path)));
+    const results = await Promise.allSettled(batch.map((path) => getTrackFromPath(path)));
+    processed += batch.length;
 
     for (const result of results) {
       if (result.status === 'fulfilled') {
@@ -314,29 +341,45 @@ const parseTracks = async (paths: string[]) => {
 
       console.warn('Failed to parse track', result.reason);
     }
+
+    options?.onProgress?.({ current: processed, total: paths.length });
   }
 
   return tracks;
 };
 
-export const getTracks = async (path: string) => {
-  const paths = await collectMp3Paths(path);
-  const tracks = await parseTracks(paths);
+export const getTracks = async (path: string, options?: TrackScanOptions) => {
+  const paths = await collectMp3Paths(path, options);
+  const tracks = await parseTracks(paths, options);
   tracks.sort((a, b) => a.path.localeCompare(b.path));
 
   return tracks;
 };
 
-export const getTracksFromFolders = async (folders: string[]) => {
+export const getTracksFromFolders = async (folders: string[], options?: TrackScanOptions) => {
   const uniqueFolders = [...new Set(folders.map((folder) => folder.trim()).filter(Boolean))];
 
   if (uniqueFolders.length === 0) {
+    options?.onProgress?.({ current: 0, total: 0 });
     return [];
   }
 
-  const pathSets = await Promise.all(uniqueFolders.map(collectMp3Paths));
+  const discoveredByFolder = new Map<string, number>();
+  const pathSets = await Promise.all(
+    uniqueFolders.map((folder) =>
+      collectMp3Paths(folder, {
+        onProgress: (progress) => {
+          if (progress.total === null) {
+            discoveredByFolder.set(folder, progress.current);
+            const discovered = [...discoveredByFolder.values()].reduce((total, current) => total + current, 0);
+            options?.onProgress?.({ current: discovered, total: null });
+          }
+        },
+      }),
+    ),
+  );
   const uniquePaths = [...new Set(pathSets.flat())];
-  const tracks = await parseTracks(uniquePaths);
+  const tracks = await parseTracks(uniquePaths, options);
   tracks.sort((a, b) => a.path.localeCompare(b.path));
 
   return tracks;

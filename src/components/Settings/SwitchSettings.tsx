@@ -11,12 +11,13 @@ type SwitchSettingsProps = {
 
 export const SwitchSettings = ({ label, children, checked, onChange }: SwitchSettingsProps) => {
   return (
-    <motion.div className='flex flex-col' animate={{ gap: checked ? 10 : 0 }}>
+    <motion.div className='flex flex-col' initial={false} animate={{ gap: checked ? 10 : 0 }}>
       <div className='flex items-center justify-between'>
         <p>{label}</p>
         <Switch checked={checked} onChange={onChange} />
       </div>
       <motion.div
+        initial={false}
         animate={{
           y: Number(checked),
           height: checked ? 'auto' : 0,

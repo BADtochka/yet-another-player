@@ -6,6 +6,7 @@ import { FlexLogo } from '@/components/FlexLogo';
 import { NavBar } from '@/components/NavBar';
 import { PlayerControls } from '@/components/PlayerControls';
 import { WindowBar } from '@/components/WindowBar';
+import { installGlobalLogHandlers } from '@/utils/appLogs';
 import { checkForAppUpdates } from '@/utils/checkForUpdates';
 import { prepareStore } from '@/utils/prepareStore';
 
@@ -24,6 +25,7 @@ const RootLayout = () => {
   };
 
   useEffect(() => {
+    installGlobalLogHandlers();
     void checkForAppUpdates();
 
     void warmApp().catch((error) => {

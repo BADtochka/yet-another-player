@@ -100,10 +100,26 @@ fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-fn is_mp3(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
+fn audio_content_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension().and_then(|extension| extension.to_str())?;
+
+    if extension.eq_ignore_ascii_case("mp3") {
+        return Some("audio/mpeg");
+    }
+
+    if extension.eq_ignore_ascii_case("m4a") {
+        return Some("audio/mp4");
+    }
+
+    if extension.eq_ignore_ascii_case("webm") {
+        return Some("audio/webm");
+    }
+
+    if extension.eq_ignore_ascii_case("ogg") {
+        return Some("audio/ogg");
+    }
+
+    None
 }
 
 fn resolve_path(url: &str, state: &AudioServerState) -> Option<PathBuf> {
@@ -120,7 +136,7 @@ fn resolve_path(url: &str, state: &AudioServerState) -> Option<PathBuf> {
     }
 
     let canonical = std::fs::canonicalize(PathBuf::from(&raw)).ok()?;
-    if !is_mp3(&canonical) {
+    if audio_content_type(&canonical).is_none() {
         return None;
     }
 
@@ -276,7 +292,7 @@ fn handle_stream_request(request: Request, state: &AudioServerState) {
         let response = Response::new(
             StatusCode(206),
             vec![
-                header("Content-Type", "audio/mpeg"),
+                header("Content-Type", audio_content_type(&path).unwrap_or("application/octet-stream")),
                 header("Accept-Ranges", "bytes"),
                 header("Content-Range", &format!("bytes {start}-{end}/{total}")),
             ],
@@ -290,7 +306,7 @@ fn handle_stream_request(request: Request, state: &AudioServerState) {
         respond_with_cors(request, response);
     } else {
         let response = Response::from_file(file)
-            .with_header(header("Content-Type", "audio/mpeg"))
+            .with_header(header("Content-Type", audio_content_type(&path).unwrap_or("application/octet-stream")))
             .with_header(header("Accept-Ranges", "bytes"));
         respond_with_cors(request, response);
     }
@@ -352,6 +368,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(AudioServerState {
             base_url,
             roots,

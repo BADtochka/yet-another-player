@@ -51,6 +51,7 @@ export const Switch = ({ checked, onChange, disabled = false, className, id }: S
       >
         <motion.div
           variants={KNOB_VARIANTS}
+          initial={false}
           animate={checked ? 'checked' : 'unchecked'}
           custom={checked}
           transition={{ type: 'spring', stiffness: 500, damping: 30, duration: 0.3 }}

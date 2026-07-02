@@ -12,9 +12,129 @@
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$APPCONFIG"
+        },
+        {
+          "path": "$APPCONFIG/**"
+        }
+      ]
+    },
     "fs:default",
     "fs:allow-read-dir",
     "fs:allow-read-file",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:allow-write-file",
+    "fs:allow-rename",
+    "fs:allow-remove",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        {
+          "path": "$APPDATA/tools"
+        },
+        {
+          "path": "$APPDATA/tools/**"
+        },
+        {
+          "path": "$APPCONFIG"
+        },
+        {
+          "path": "$APPCONFIG/**"
+        },
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$AUDIO/**"
+        },
+        {
+          "path": "/mnt/**"
+        }
+      ]
+    },
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://github.com/yt-dlp/yt-dlp/releases/latest/download/*"
+        },
+        {
+          "url": "https://*.githubusercontent.com/*"
+        },
+        {
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/*"
+        },
+        {
+          "url": "https://objects.githubusercontent.com/*"
+        },
+        {
+          "url": "https://release-assets.githubusercontent.com/*"
+        },
+        {
+          "url": "https://evermeet.cx/ffmpeg/*"
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "yt-dlp",
+          "cmd": "$APPDATA/tools/yt-dlp",
+          "args": true
+        },
+        {
+          "name": "yt-dlp.exe",
+          "cmd": "$APPDATA/tools/yt-dlp.exe",
+          "args": true
+        },
+        {
+          "name": "ffmpeg.exe",
+          "cmd": "$APPDATA/tools/ffmpeg/ffmpeg.exe",
+          "args": true
+        },
+        {
+          "name": "ffmpeg",
+          "cmd": "$APPDATA/tools/ffmpeg/ffmpeg",
+          "args": true
+        },
+        {
+          "name": "tar",
+          "cmd": "tar",
+          "args": true
+        },
+        {
+          "name": "chmod",
+          "cmd": "chmod",
+          "args": [
+            "+x",
+            {
+              "validator": "^.+[/\\\\]tools[/\\\\](yt-dlp|ffmpeg[/\\\\]ffmpeg|ffmpeg[/\\\\]ffprobe)$"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "yt-dlp",
+          "cmd": "$APPDATA/tools/yt-dlp",
+          "args": true
+        },
+        {
+          "name": "yt-dlp.exe",
+          "cmd": "$APPDATA/tools/yt-dlp.exe",
+          "args": true
+        }
+      ]
+    },
     "fs:allow-audio-read-recursive",
     "dialog:default",
     "zustand:default"

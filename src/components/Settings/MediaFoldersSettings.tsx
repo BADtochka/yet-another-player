@@ -4,6 +4,7 @@ import { MediaFolderRow } from '@/components/Settings/MediaFolderRow';
 import { SettingsSection } from '@/components/Settings/SettingsSection';
 import { SettingsTextAction } from '@/components/Settings/SettingsTextAction';
 import { useSettingsStore } from '@/stores';
+import { type TrackScanProgress } from '@/utils/getTracks';
 import { parseMusic } from '@/utils/parseMusic';
 
 export const MediaFoldersSettings = () => {
@@ -12,6 +13,7 @@ export const MediaFoldersSettings = () => {
   const removeMusicFolder = useSettingsStore((state) => state.removeMusicFolder);
   const [isAdding, setIsAdding] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<TrackScanProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const onAddFolder = async () => {
@@ -44,10 +46,11 @@ export const MediaFoldersSettings = () => {
     }
 
     setError(null);
+    setScanProgress(null);
     setIsRescanning(true);
 
     try {
-      await parseMusic();
+      await parseMusic({ onProgress: setScanProgress });
     } catch (rescanError) {
       setError(rescanError instanceof Error ? rescanError.message : String(rescanError));
     } finally {
@@ -74,6 +77,12 @@ export const MediaFoldersSettings = () => {
           <SettingsTextAction disabled={isRescanning} onClick={onRescan}>
             {isRescanning ? 'Обновление...' : 'Обновить'}
           </SettingsTextAction>
+        )}
+
+        {scanProgress && (
+          <p className='text-sm font-medium text-[#8d8d8d]'>
+            {scanProgress.current} / {scanProgress.total ?? '...'}
+          </p>
         )}
 
         {error && <p className='text-sm text-[#da3e3e]'>{error}</p>}

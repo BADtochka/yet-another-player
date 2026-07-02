@@ -6,7 +6,7 @@ interface IconProps extends SVGProps<SVGSVGElement> {
   size?: number;
 }
 
-const FolderInner = forwardRef<SVGSVGElement, IconProps>(function Folder({ size = 24, ...props }: IconProps, ref) {
+const FolderInner = forwardRef<SVGSVGElement, IconProps>(function Folder({ size = 24, ...props }: IconProps) {
   return (
     <svg width={size} height={size} viewBox='0 0 24 24' fill='none' {...props}>
       <path

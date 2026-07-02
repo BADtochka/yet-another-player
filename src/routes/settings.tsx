@@ -1,3 +1,5 @@
+import { DiagnosticsSettings } from '@/components/Settings/DiagnosticsSettings';
+import { ExternalToolsSettings } from '@/components/Settings/ExternalToolsSettings';
 import { MediaFoldersSettings } from '@/components/Settings/MediaFoldersSettings';
 import { SelectSettings } from '@/components/Settings/SelectSettings';
 import { SwitchSettings } from '@/components/Settings/SwitchSettings';
@@ -17,6 +19,8 @@ function RouteComponent() {
   return (
     <div className='mx-auto flex w-full max-w-[952px] flex-col gap-5'>
       <MediaFoldersSettings />
+      <ExternalToolsSettings />
+      <DiagnosticsSettings />
       <SwitchSettings
         label='Установить одну громкость для всех треков'
         checked={volumeNormEnabled}
