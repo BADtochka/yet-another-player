@@ -1,6 +1,11 @@
 import { useMusicStore, useSettingsStore } from '@/stores';
 import { registerMusicRoots } from '@/utils/audioServer';
-import { getTracksFromFolders, type TrackScanProgress } from '@/utils/getTracks';
+import {
+  collectAudioPathsFromFolders,
+  createTrackStub,
+  parseTracksInBatches,
+  type TrackScanProgress,
+} from '@/utils/getTracks';
 
 type ParseMusicOptions = {
   folders?: string[];
@@ -18,9 +23,17 @@ export const parseMusic = async (options?: string[] | ParseMusicOptions) => {
 
   await registerMusicRoots(validFolders);
 
-  const tracks = await getTracksFromFolders(validFolders, {
-    onProgress: Array.isArray(options) ? undefined : options?.onProgress,
-  });
+  const onProgress = Array.isArray(options) ? undefined : options?.onProgress;
+  const paths = await collectAudioPathsFromFolders(validFolders, { onProgress });
+  const store = useMusicStore.getState();
 
-  useMusicStore.getState().setTracks(tracks);
+  store.setTracks(paths.map(createTrackStub));
+
+  await parseTracksInBatches(paths, {
+    onProgress,
+    onBatch: (tracks, progress) => {
+      store.mergeTracks(tracks);
+      onProgress?.(progress);
+    },
+  });
 };

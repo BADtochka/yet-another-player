@@ -8,4 +8,5 @@ export type Track = {
   album: string | null;
   year: number | null;
   duration: number | null;
+  replayGainDb: number | null;
 };

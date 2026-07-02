@@ -64,6 +64,12 @@ The `Windows build` workflow compiles the NSIS installer on tags, uploads `lates
 `bun run tauri dev` automatically configures audio in WSL:
 
 - on WSLg (Windows 11) it uses `PULSE_SERVER=unix:/mnt/wslg/PulseServer`
+- PipeWire GStreamer plugins are disabled because they often break WebKit playback in WSL
+- `PULSE_LATENCY_MSEC=150` increases the PulseAudio buffer to reduce Web Audio underruns
 - otherwise it falls back to a null ALSA device to avoid PipeWire/ALSA startup errors
 
 If you still need real audio in WSL, run a PulseAudio server on Windows and expose it on port `4713`.
+
+Check **Settings → Diagnostics → Audio environment** to verify PulseAudio routing and whether Web Audio compression is enabled.
+
+WSL always uses native playback. Volume normalization uses ReplayGain tags from MP3 files on all platforms.

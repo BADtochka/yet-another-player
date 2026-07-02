@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 const FALLBACK_COVER = '/temp_cover.png';
 
 let baseUrlPromise: Promise<string> | null = null;
+const coverSrcCache = new Map<string, string | null>();
 
 const getBaseUrl = () => {
   if (!baseUrlPromise) {
@@ -22,27 +23,25 @@ export const warmupAudioServer = async () => {
   const baseUrl = await getBaseUrl();
 
   try {
-    await fetch(`${baseUrl}/stream?path=${encodeURIComponent('__warmup__')}`);
+    await fetch(`${baseUrl}/warmup`, { method: 'HEAD' });
   } catch {
     // Warmup is best-effort.
   }
 };
 
 export const getCoverSrc = async (path: string) => {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}/cover?path=${encodeURIComponent(path)}`;
-
-  try {
-    const response = await fetch(url, { method: 'HEAD' });
-
-    if (response.ok) {
-      return url;
-    }
-  } catch {
-    // Fall back to the placeholder cover.
+  if (coverSrcCache.has(path)) {
+    return coverSrcCache.get(path) ?? FALLBACK_COVER;
   }
 
-  return FALLBACK_COVER;
+  try {
+    const url = await invoke<string | null>('get_cover_src', { path });
+    coverSrcCache.set(path, url);
+    return url ?? FALLBACK_COVER;
+  } catch {
+    coverSrcCache.set(path, null);
+    return FALLBACK_COVER;
+  }
 };
 
 export const getAudioSrc = async (path: string) => {

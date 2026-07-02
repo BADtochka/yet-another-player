@@ -1,4 +1,9 @@
-import { musicStoreHandler } from '@/stores/musicStore';
+import { musicStoreHandler, useMusicStore } from '@/stores/musicStore';
+import {
+  loadPersistedPlaybackPosition,
+  playerStoreHandler,
+  restorePersistedPlayerState,
+} from '@/stores/playerStore';
 import { settingsStoreHandler, useSettingsStore } from '@/stores/settingsStore';
 import { registerMusicRoots } from '@/utils/audioServer';
 
@@ -15,7 +20,26 @@ export const startStores = async () => {
   started = true;
 
   await settingsStoreHandler.start();
+
+  const { musicFolders, setMusicFolders } = useSettingsStore.getState();
+  setMusicFolders(musicFolders);
+
   await musicStoreHandler.start();
+
+  const { tracks, setTracks } = useMusicStore.getState();
+  setTracks(tracks);
+
+  await playerStoreHandler.start();
+  await loadPersistedPlaybackPosition();
+  restorePersistedPlayerState();
+
+  useMusicStore.subscribe((_state, prev) => {
+    if (_state.tracks === prev.tracks) {
+      return;
+    }
+
+    restorePersistedPlayerState();
+  });
 
   useSettingsStore.subscribe((state, prev) => {
     if (foldersChanged(state.musicFolders, prev.musicFolders)) {

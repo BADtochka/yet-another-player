@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'preact/hooks';
 import { VolumeMax } from '@/components/Icons/VolumeMax';
 import { VolumeMid } from '@/components/Icons/VolumeMid';
 import { VolumeMin } from '@/components/Icons/VolumeMin';
 import { VolumeMute } from '@/components/Icons/VolumeMute';
 import { Slider } from '@/components/Slider';
+import { useEffect, useRef } from 'preact/hooks';
 
 export type VolumeBarProps = {
   value: number;
@@ -27,7 +27,7 @@ const volumeIcon = (value: number) => {
   return VolumeMax;
 };
 
-const VOLUME_WHEEL_STEP = 0.05;
+const VOLUME_STEP = 0.1;
 
 const clampVolume = (value: number) => Math.min(1, Math.max(0, value));
 
@@ -50,7 +50,7 @@ export const VolumeBar = ({ value, className, onChange }: VolumeBarProps) => {
       event.stopPropagation();
 
       const direction = event.deltaY < 0 ? 1 : -1;
-      const next = clampVolume(Math.round((valueRef.current + direction * VOLUME_WHEEL_STEP) * 100) / 100);
+      const next = clampVolume(Math.round((valueRef.current + direction * VOLUME_STEP) * 100) / 100);
 
       if (next > 0) {
         previousVolumeRef.current = next;
@@ -92,7 +92,7 @@ export const VolumeBar = ({ value, className, onChange }: VolumeBarProps) => {
           value={value}
           min={0}
           max={1}
-          step={0.01}
+          step={VOLUME_STEP}
           showThumb={false}
           onValueChange={onChange}
           onValueCommit={onChange}

@@ -26,18 +26,6 @@ const normalizeFolders = (folders: string[]) => {
   return [...unique];
 };
 
-const normalizeMusicFoldersState = (state: Record<string, unknown>) => {
-  if (Array.isArray(state.musicFolders)) {
-    return normalizeFolders(state.musicFolders.filter((item): item is string => typeof item === 'string'));
-  }
-
-  if (typeof state.musicPath === 'string' && state.musicPath.trim()) {
-    return [normalizeFolder(state.musicPath)];
-  }
-
-  return [];
-};
-
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   musicFolders: [],
   volumeNormEnabled: false,
@@ -66,9 +54,4 @@ export const settingsStoreHandler = createTauriStore('settings', useSettingsStor
   saveOnChange: true,
   filterKeys: ['musicFolders', 'volumeNormLevel', 'volumeNormEnabled'],
   filterKeysStrategy: 'pick',
-  hooks: {
-    beforeFrontendSync: (state) => ({
-      musicFolders: normalizeMusicFoldersState(state as Record<string, unknown>),
-    }),
-  },
 });

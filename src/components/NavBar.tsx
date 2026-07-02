@@ -35,6 +35,7 @@ export const NavBar = () => {
   const tracks = useMusicStore((state) => state.tracks);
   const addTrack = useMusicStore((state) => state.addTrack);
   const setCurrentTrack = usePlayerStore((state) => state.setCurrentTrack);
+  const setCurrentTime = usePlayerStore((state) => state.setCurrentTime);
   const setPlaying = usePlayerStore((state) => state.setPlaying);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<MusicSearchResult[]>([]);
@@ -170,6 +171,7 @@ export const NavBar = () => {
 
   const onLocalTrackClick = (track: (typeof tracks)[number]) => {
     setCurrentTrack(track);
+    setCurrentTime(0);
     setPlaying(true);
     setIsFocused(false);
   };

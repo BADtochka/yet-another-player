@@ -9,7 +9,7 @@ use tauri::Url;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 mod cover;
-mod wsl_audio;
+mod linux_audio;
 
 struct RangeFile {
     file: File,
@@ -39,6 +39,23 @@ struct AudioServerState {
 #[tauri::command]
 fn audio_server_base(state: tauri::State<AudioServerState>) -> String {
     state.base_url.clone()
+}
+
+#[tauri::command]
+fn get_cover_src(state: tauri::State<AudioServerState>, path: String) -> Option<String> {
+    let resolved = resolve_track_path(&path, &state)?;
+    let cover_cache = state.cover_cache.lock().ok()?;
+
+    if cover::load_cover(&resolved, &cover_cache).is_none() {
+        return None;
+    }
+
+    cover_url_for_path(&state.base_url, &path)
+}
+
+#[tauri::command]
+fn get_audio_environment(state: tauri::State<linux_audio::AudioEnvironment>) -> linux_audio::AudioEnvironment {
+    state.inner().clone()
 }
 
 #[tauri::command]
@@ -122,20 +139,14 @@ fn audio_content_type(path: &Path) -> Option<&'static str> {
     None
 }
 
-fn resolve_path(url: &str, state: &AudioServerState) -> Option<PathBuf> {
-    let parsed = Url::parse(&format!("http://localhost{url}")).ok()?;
-    let raw = parsed
-        .query_pairs()
-        .find(|(key, _)| key.as_ref() == "path")
-        .map(|(_, value)| value.into_owned())?;
-
+fn resolve_track_path(raw: &str, state: &AudioServerState) -> Option<PathBuf> {
     if let Ok(cache) = state.resolved_paths.lock() {
-        if let Some(path) = cache.get(&raw) {
+        if let Some(path) = cache.get(raw) {
             return Some(path.clone());
         }
     }
 
-    let canonical = std::fs::canonicalize(PathBuf::from(&raw)).ok()?;
+    let canonical = std::fs::canonicalize(PathBuf::from(raw)).ok()?;
     if audio_content_type(&canonical).is_none() {
         return None;
     }
@@ -153,10 +164,26 @@ fn resolve_path(url: &str, state: &AudioServerState) -> Option<PathBuf> {
     }
 
     if let Ok(mut cache) = state.resolved_paths.lock() {
-        cache.insert(raw, canonical.clone());
+        cache.insert(raw.to_string(), canonical.clone());
     }
 
     Some(canonical)
+}
+
+fn resolve_path(url: &str, state: &AudioServerState) -> Option<PathBuf> {
+    let parsed = Url::parse(&format!("http://localhost{url}")).ok()?;
+    let raw = parsed
+        .query_pairs()
+        .find(|(key, _)| key.as_ref() == "path")
+        .map(|(_, value)| value.into_owned())?;
+
+    resolve_track_path(&raw, state)
+}
+
+fn cover_url_for_path(base_url: &str, path: &str) -> Option<String> {
+    let mut url = Url::parse(&format!("{base_url}/cover")).ok()?;
+    url.query_pairs_mut().append_pair("path", path);
+    Some(url.to_string())
 }
 
 fn header(name: &str, value: &str) -> Header {
@@ -312,8 +339,22 @@ fn handle_stream_request(request: Request, state: &AudioServerState) {
     }
 }
 
+fn handle_warmup_request(request: Request) {
+    if request.method() == &Method::Options {
+        respond_with_cors(request, Response::empty(204));
+        return;
+    }
+
+    respond_with_cors(request, Response::empty(204));
+}
+
 fn handle_request(request: Request, state: &AudioServerState) {
     let url = request.url();
+
+    if url.starts_with("/warmup") {
+        handle_warmup_request(request);
+        return;
+    }
 
     if url.starts_with("/cover") {
         handle_cover_request(request, state);
@@ -338,7 +379,7 @@ fn start_audio_server(state: Arc<AudioServerState>, server: Arc<Server>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    wsl_audio::configure();
+    let audio_environment = linux_audio::configure();
 
     let roots: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let cover_cache = Arc::new(Mutex::new(PathBuf::new()));
@@ -370,6 +411,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(audio_environment)
         .manage(AudioServerState {
             base_url,
             roots,
@@ -404,7 +446,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![audio_server_base, set_music_roots])
+        .invoke_handler(tauri::generate_handler![audio_server_base, get_audio_environment, get_cover_src, set_music_roots])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

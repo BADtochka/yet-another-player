@@ -45,9 +45,9 @@ export const PlayerControls = () => {
           <Shuffle />
           <Previous onPointerDown={() => playPrevious()} />
           {!playing ? (
-            <Play size={50} onPointerDown={() => setPlaying(true)} />
+            <Play size={50} onClick={() => setPlaying(true)} />
           ) : (
-            <Pause size={50} onPointerDown={() => setPlaying(false)} />
+            <Pause size={50} onClick={() => setPlaying(false)} />
           )}
           <Next onPointerDown={() => playNext()} />
           <Repeat />

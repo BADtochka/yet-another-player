@@ -3,8 +3,8 @@ import { open, readDir, stat } from '@tauri-apps/plugin-fs';
 import { type Track } from '@/types/Track';
 
 const ID3_HEADER_SIZE = 10;
-const METADATA_CHUNK_SIZE = 1024 * 1024;
-const PARSE_CONCURRENCY = 24;
+const METADATA_CHUNK_SIZE = 256 * 1024;
+const PARSE_BATCH_SIZE = 16;
 const SKIP_DIR_NAMES = new Set(['.thumbnails', '.Trash', '$RECYCLE.BIN', 'System Volume Information']);
 const TEXT_FRAME_IDS = new Set(['TIT2', 'TPE1', 'TALB', 'TYER', 'TDRC', 'TLEN']);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'webm', 'ogg']);
@@ -41,6 +41,17 @@ const fallbackTrackName = (path: string) => {
   return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
 };
 
+export const createTrackStub = (path: string): Track => ({
+  name: fallbackTrackName(path),
+  artists: [],
+  lyrics: [],
+  path,
+  album: null,
+  year: null,
+  duration: null,
+  replayGainDb: null,
+});
+
 const audioExtension = (name: string) => {
   const extensionIndex = name.lastIndexOf('.');
 
@@ -58,6 +69,83 @@ const uint32Size = (bytes: Uint8Array, offset: number) =>
   (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
 
 const trimText = (value: string) => value.replace(/\0+$/g, '').trim();
+
+const textTerminatorLength = (encoding: number) => (encoding === 1 || encoding === 2 ? 2 : 1);
+
+const findTextTerminator = (bytes: Uint8Array, offset: number, encoding: number) => {
+  const terminatorLength = textTerminatorLength(encoding);
+
+  for (let index = offset; index + terminatorLength <= bytes.length; index += terminatorLength) {
+    if (terminatorLength === 2) {
+      if (bytes[index] === 0 && bytes[index + 1] === 0) {
+        return index;
+      }
+    } else if (bytes[index] === 0) {
+      return index;
+    }
+  }
+
+  return -1;
+};
+
+const parseReplayGainDb = (value: string) => {
+  const match = value.match(/([+-]?\d+(?:\.\d+)?)\s*dB/i);
+
+  return match ? Number.parseFloat(match[1]) : null;
+};
+
+const parseTxxxFrame = (frame: Uint8Array) => {
+  if (frame.length === 0) {
+    return null;
+  }
+
+  const encoding = frame[0];
+  const descriptionEnd = findTextTerminator(frame, 1, encoding);
+
+  if (descriptionEnd === -1) {
+    return null;
+  }
+
+  const description = decodeEncodedText(encoding, frame.slice(1, descriptionEnd)).toLowerCase();
+  const valueStart = descriptionEnd + textTerminatorLength(encoding);
+  const value = decodeEncodedText(encoding, frame.slice(valueStart));
+  const replayGainDb = value ? parseReplayGainDb(value) : null;
+
+  if (replayGainDb == null) {
+    return null;
+  }
+
+  if (description.includes('replaygain_track_gain')) {
+    return { kind: 'track' as const, db: replayGainDb };
+  }
+
+  if (description.includes('replaygain_album_gain')) {
+    return { kind: 'album' as const, db: replayGainDb };
+  }
+
+  return null;
+};
+
+const decodeEncodedText = (encoding: number, payload: Uint8Array) => {
+  if (payload.length === 0) {
+    return '';
+  }
+
+  return decodeText(new Uint8Array([encoding, ...payload]));
+};
+
+const parseRva2Frame = (frame: Uint8Array) => {
+  const ownerEnd = frame.indexOf(0);
+
+  if (ownerEnd === -1 || ownerEnd + 3 > frame.length) {
+    return null;
+  }
+
+  const adjustment = (frame[ownerEnd + 1] << 8) | frame[ownerEnd + 2];
+  const signed = adjustment > 0x7fff ? adjustment - 0x10000 : adjustment;
+
+  return signed / 256;
+};
 
 const decodeText = (bytes: Uint8Array) => {
   if (bytes.length === 0) {
@@ -204,6 +292,7 @@ const parseId3Tags = (bytes: Uint8Array, path: string): Track => {
     album: null,
     year: null,
     duration: null,
+    replayGainDb: null,
   };
 
   if (bytes.length < ID3_HEADER_SIZE || bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) {
@@ -241,6 +330,20 @@ const parseId3Tags = (bytes: Uint8Array, path: string): Track => {
         const milliseconds = Number.parseInt(value, 10);
         track.duration = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds / 1000 : null;
       }
+    }
+
+    if (frameId === 'TXXX') {
+      const replayGain = parseTxxxFrame(frame);
+
+      if (replayGain?.kind === 'track') {
+        track.replayGainDb = replayGain.db;
+      } else if (replayGain?.kind === 'album' && track.replayGainDb == null) {
+        track.replayGainDb = replayGain.db;
+      }
+    }
+
+    if (frameId === 'RVA2' && track.replayGainDb == null) {
+      track.replayGainDb = parseRva2Frame(frame);
     }
 
     offset = frameEnd;
@@ -321,28 +424,59 @@ const collectMp3Paths = async (root: string, options?: TrackScanOptions) => {
   return paths;
 };
 
-const parseTracks = async (paths: string[], options?: TrackScanOptions) => {
+const parseTrackBatch = async (paths: string[]) => {
+  const results = await Promise.allSettled(paths.map((path) => getTrackFromPath(path)));
   const tracks: Track[] = [];
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      tracks.push(result.value);
+      continue;
+    }
+
+    console.warn('Failed to parse track', result.reason);
+  }
+
+  return tracks;
+};
+
+export const parseTracksInBatches = async (
+  paths: string[],
+  options?: TrackScanOptions & {
+    onBatch?: (tracks: Track[], progress: TrackScanProgress) => void;
+  },
+) => {
   let processed = 0;
 
   options?.onProgress?.({ current: 0, total: paths.length });
 
-  for (let index = 0; index < paths.length; index += PARSE_CONCURRENCY) {
-    const batch = paths.slice(index, index + PARSE_CONCURRENCY);
-    const results = await Promise.allSettled(batch.map((path) => getTrackFromPath(path)));
-    processed += batch.length;
+  for (let index = 0; index < paths.length; index += PARSE_BATCH_SIZE) {
+    const batchPaths = paths.slice(index, index + PARSE_BATCH_SIZE);
+    const tracks = await parseTrackBatch(batchPaths);
 
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        tracks.push(result.value);
-        continue;
-      }
+    processed += batchPaths.length;
 
-      console.warn('Failed to parse track', result.reason);
+    const progress = { current: processed, total: paths.length };
+    options?.onBatch?.(tracks, progress);
+    options?.onProgress?.(progress);
+
+    if (index + PARSE_BATCH_SIZE < paths.length) {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
     }
-
-    options?.onProgress?.({ current: processed, total: paths.length });
   }
+};
+
+const parseTracks = async (paths: string[], options?: TrackScanOptions) => {
+  const tracks: Track[] = [];
+
+  await parseTracksInBatches(paths, {
+    onProgress: options?.onProgress,
+    onBatch: (batch) => {
+      tracks.push(...batch);
+    },
+  });
 
   return tracks;
 };
@@ -355,7 +489,7 @@ export const getTracks = async (path: string, options?: TrackScanOptions) => {
   return tracks;
 };
 
-export const getTracksFromFolders = async (folders: string[], options?: TrackScanOptions) => {
+export const collectAudioPathsFromFolders = async (folders: string[], options?: TrackScanOptions) => {
   const uniqueFolders = [...new Set(folders.map((folder) => folder.trim()).filter(Boolean))];
 
   if (uniqueFolders.length === 0) {
@@ -377,7 +511,15 @@ export const getTracksFromFolders = async (folders: string[], options?: TrackSca
       }),
     ),
   );
+
   const uniquePaths = [...new Set(pathSets.flat())];
+  uniquePaths.sort((a, b) => a.localeCompare(b));
+
+  return uniquePaths;
+};
+
+export const getTracksFromFolders = async (folders: string[], options?: TrackScanOptions) => {
+  const uniquePaths = await collectAudioPathsFromFolders(folders, options);
   const tracks = await parseTracks(uniquePaths, options);
   tracks.sort((a, b) => a.path.localeCompare(b.path));
 
