@@ -36,3 +36,80 @@
     font: inherit;
   }
 }
+
+@layer components {
+  [data-sonner-toaster][data-sonner-theme='dark'] {
+    font-family: var(--font-onest);
+    --normal-bg: #061232;
+    --normal-bg-hover: #0a1a42;
+    --normal-border: #182853;
+    --normal-border-hover: rgb(80 107 169 / 45%);
+    --normal-text: #d9d9d9;
+    --success-bg: #061232;
+    --success-border: rgb(80 107 169 / 45%);
+    --success-text: #d9d9d9;
+    --info-bg: #061232;
+    --info-border: rgb(80 107 169 / 45%);
+    --info-text: #d9d9d9;
+    --warning-bg: #061232;
+    --warning-border: rgb(80 107 169 / 45%);
+    --warning-text: #d9d9d9;
+    --error-bg: #140d18;
+    --error-border: rgb(218 62 62 / 40%);
+    --error-text: #f0a0a0;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast {
+    box-shadow: 0 16px 40px rgb(1 4 12 / 55%);
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-title {
+    color: #d9d9d9;
+    font-weight: 500;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-description {
+    color: #8d8d8d;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-action {
+    background: #506ba9 !important;
+    color: #fff !important;
+    border: 0 !important;
+    font-weight: 500;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-action:hover {
+    background: #5f7bc0 !important;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-cancel {
+    background: #182853 !important;
+    color: #d9d9d9 !important;
+    border: 1px solid rgb(80 107 169 / 25%) !important;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-close {
+    background: #061232 !important;
+    border-color: #182853 !important;
+    color: #8d8d8d !important;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] .yap-toast-close:hover {
+    background: #0a1a42 !important;
+    border-color: rgb(80 107 169 / 45%) !important;
+    color: #d9d9d9 !important;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] [data-sonner-toast] [data-icon] {
+    color: #506ba9;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] [data-sonner-toast][data-type='error'] [data-icon] {
+    color: #da3e3e;
+  }
+
+  [data-sonner-toaster][data-sonner-theme='dark'] [data-sonner-toast][data-type='loading'] [data-icon] {
+    color: #506ba9;
+  }
+}
