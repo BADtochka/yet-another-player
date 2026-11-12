@@ -9,6 +9,7 @@ use tokio::io::AsyncWriteExt;
 mod audio;
 mod cover;
 mod external_tools;
+mod genius;
 mod library;
 mod linux_audio;
 
@@ -175,6 +176,10 @@ pub fn run() {
             get_audio_environment,
             get_cover,
             get_lyrics,
+            genius::genius_is_configured,
+            genius::genius_save_token,
+            genius::genius_disconnect,
+            genius::genius_search,
             library::library_catalog_status,
             library::queries::library_tracks_page,
             library::queries::library_play_tracks,

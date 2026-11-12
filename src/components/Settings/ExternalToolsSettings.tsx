@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { SettingsSection } from '@/components/Settings/SettingsSection';
+import { GeniusSettings } from '@/components/Settings/GeniusSettings';
 import { Dialog } from '@/components/Dialog';
 import { Button } from '@/components/Button';
 import { Icon } from '@/components/Icons/Icon';
@@ -212,6 +213,7 @@ export const ExternalToolsSettings = () => (
     description='Инструменты для декодирования, скачивания и получения метаданных треков'>
     <div className='settings-rows'>
       {TOOLS.map((tool) => <ExternalToolRow key={tool.tool} {...tool} />)}
+      <GeniusSettings />
     </div>
   </SettingsSection>
 );

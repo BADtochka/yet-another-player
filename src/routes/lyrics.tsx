@@ -1,10 +1,13 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { Button } from '@/components/Button';
 import { MediaDetails } from '@/components/MediaDetails';
 import type { Track } from '@/types/Track';
 import { tracksByPaths } from '@/hooks/useLibrary';
 import { usePlayerStore } from '@/stores';
+import { geniusError, geniusIsConfigured, geniusSearch, type GeniusSong } from '@/utils/genius';
 
 export const Route = createFileRoute('/lyrics')({ component: Lyrics });
 
@@ -21,6 +24,59 @@ function parseLrc(text: string) {
       content,
     }));
   }).sort((a, b) => a.time - b.time);
+}
+
+function GeniusLookup({ track }: { track: Track }) {
+  const [configured, setConfigured] = useState<boolean>();
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<GeniusSong[]>();
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let active = true;
+    void geniusIsConfigured().then((ready) => {
+      if (active) setConfigured(ready);
+    }).catch((reason) => {
+      if (active) setError(geniusError(reason));
+    });
+    return () => { active = false; };
+  }, []);
+
+  async function search() {
+    setLoading(true);
+    setError(undefined);
+    setResults(undefined);
+    try {
+      setResults(await geniusSearch(track.name, track.artists.join(' ')));
+    } catch (reason) {
+      if (reason === 'notConfigured') setConfigured(false);
+      else setError(geniusError(reason));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className='genius-lookup'>
+      <p>Найдите страницу с текстом на Genius.</p>
+      {configured === true && (
+        <Button icon='Search' disabled={loading} onClick={() => void search()}>
+          {loading ? 'Ищем в Genius…' : 'Найти в Genius'}
+        </Button>
+      )}
+      {configured === false && <Link to='/settings'>Подключить Genius в настройках</Link>}
+      {error && <p className='kit-error' role='alert'>{error}</p>}
+      {results && (results.length ? (
+        <ul aria-label='Результаты поиска Genius'>
+          {results.map((song) => <li key={song.url}>
+            <Button icon='Open' size='small' onClick={() => void openUrl(song.url).catch(() => setError('Не удалось открыть страницу Genius.'))}>
+              {song.title} · {song.artist}
+            </Button>
+          </li>)}
+        </ul>
+      ) : <p role='status'>Genius не нашёл совпадений.</p>)}
+    </div>
+  );
 }
 
 function LyricsReader({ path, text, lines }: { path: string; text: string; lines: Line[] }) {
@@ -68,11 +124,7 @@ function LocalLyrics({ track }: { track: Track }) {
   const lines = useMemo(() => parseLrc(text), [text]);
   if (text.trim()) return <LyricsReader path={track.path} text={text} lines={lines} />;
   if (local === undefined) return <div className='lyrics-status' role='status'>Читаем локальный текст…</div>;
-  return (
-    <div className='lyrics-status'>
-      <p>Для этого трека нет локального текста.</p>
-    </div>
-  );
+  return <GeniusLookup track={track} />;
 }
 
 function Lyrics() {

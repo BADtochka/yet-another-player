@@ -257,6 +257,13 @@
   .lyrics-lines > button { display: block; width: 100%; padding: 8px 4px; color: #88888b; cursor: pointer; }
   .lyrics-lines > button:hover, .lyrics-lines [aria-current='true'] { color: var(--yap-text); }
   .lyrics-lines[data-synced='false'] > p { display: grid; min-height: 100%; place-items: center; }
+  .genius-lookup { display: grid; align-content: center; justify-items: center; gap: 12px; overflow: auto; padding: 24px; text-align: center; }
+  .genius-lookup > a { color: var(--yap-text); text-decoration: underline; text-underline-offset: 4px; }
+  .genius-lookup ul { display: grid; max-width: 100%; gap: 8px; }
+  .genius-lookup li .kit-button { max-width: 100%; height: auto; white-space: normal; }
+  .genius-instructions, .genius-token-field { display: grid; gap: 8px; }
+  .genius-instructions ol { display: grid; gap: 6px; padding-inline-start: 22px; list-style: decimal; }
+  .genius-instructions > .kit-button { justify-self: start; }
 
   .playlist-actions { display: flex; max-width: var(--yap-list-width); justify-content: flex-end; margin: 0 auto 12px; }
   .playlist-candidates { display: grid; gap: 8px; max-height: 42vh; overflow: auto; }
