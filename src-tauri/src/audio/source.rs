@@ -1,4 +1,4 @@
-use std::{fs::File, io, path::Path, sync::Arc, time::Duration};
+use std::{fs::File, io, panic::catch_unwind, path::Path, sync::Arc, time::Duration};
 
 use opus_decoder::{OpusDecoder, OpusMultistreamDecoder};
 use rodio::{source::SeekError, ChannelCount, Decoder, Sample, SampleRate, Source};
@@ -15,13 +15,22 @@ use symphonia::core::{
 type AudioError = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn open(path: &Path) -> Result<Box<dyn Source + Send>, AudioError> {
-    match Decoder::try_from(File::open(path)?) {
-        Ok(decoder) => Ok(Box::new(decoder)),
-        Err(original) => match OpusSource::open(path)? {
-            Some(decoder) => Ok(Box::new(decoder)),
-            None => Err(original.into()),
-        },
-    }
+    // The decoders can panic while opening files with invalid stream properties.
+    catch_unwind(|| -> Result<Box<dyn Source + Send>, AudioError> {
+        match Decoder::try_from(File::open(path)?) {
+            Ok(decoder) => Ok(Box::new(decoder)),
+            Err(original) => match OpusSource::open(path)? {
+                Some(decoder) => Ok(Box::new(decoder)),
+                None => Err(original.into()),
+            },
+        }
+    })
+    .map_err(|panic| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Audio decoder: {}", crate::panic_message(&*panic)),
+        )
+    })?
 }
 
 enum Opus {
