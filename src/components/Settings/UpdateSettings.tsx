@@ -9,7 +9,7 @@ import { toast } from '@/utils/toast';
 export function UpdateSettings() {
   const [version, setVersion] = useState<string>();
   const [checking, setChecking] = useState(false);
-  const { update, installing } = useAvailableUpdate();
+  const { update, installing, pacmanCommand } = useAvailableUpdate();
 
   useEffect(() => {
     void getVersion().then(setVersion).catch(() => undefined);
@@ -34,10 +34,11 @@ export function UpdateSettings() {
           yap <Icon name='Github' size={20} />
         </button></h3>
         {version && <p className='settings-version'>v{version}{update && ` → v${update.version}`}</p>}
+        {pacmanCommand && <code className='select-text break-all'>{pacmanCommand}</code>}
       </div>
       <Button variant='primary' icon={update ? 'Install' : 'Refresh'} data-update={update ? 'true' : undefined}
         disabled={checking || installing} onClick={() => void check()}>
-        {installing ? 'Устанавливаем…' : checking ? 'Проверяем…' : update ? 'Доступно обновление' : 'Проверить обновление'}
+        {installing ? 'Загружаем…' : checking ? 'Проверяем…' : update?.kind === 'arch' ? 'Скачать пакет' : update ? 'Доступно обновление' : 'Проверить обновление'}
       </Button>
     </div>
   );

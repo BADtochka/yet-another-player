@@ -16,6 +16,9 @@
       "allow": [{"path": "$APPCONFIG"}]
     },
     "dialog:default",
+    "process:allow-restart",
+    "updater:allow-check",
+    "updater:allow-download-and-install",
     "zustand:default"
   ]
 }

@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       linux_only:
-        description: 'Build only Linux (no release upload)'
+        description: 'Build Linux packages only, including Arch (no release upload)'
         required: false
         default: false
         type: boolean
@@ -46,7 +46,7 @@ jobs:
             exit 0
           fi
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ || "$GITHUB_REF" != "refs/tags/$tag" || "$LINUX_ONLY" == "true" ]]; then
-            echo "::error::Select the matching vX.Y.Z tag and enable both platforms to publish a release."
+            echo "::error::Select the matching vX.Y.Z tag and enable all platforms to publish a release."
             exit 1
           fi
           printf 'tag=%s\nversion=%s\n' "$tag" "${tag#v}" >> "$GITHUB_OUTPUT"
@@ -191,9 +191,127 @@ jobs:
           path: src-tauri/target/release/bundle/appimage/*.AppImage*
           if-no-files-found: error
 
+  build-macos:
+    name: Build universal macOS DMG
+    needs: release-info
+    if: ${{ !inputs.linux_only }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: macos-universal
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set version from tag
+        if: needs.release-info.outputs.tag != ''
+        env:
+          VERSION: ${{ needs.release-info.outputs.version }}
+        run: ./scripts/set-version.sh "$VERSION"
+
+      - name: Build macOS bundles
+        if: needs.release-info.outputs.tag == ''
+        run: bun run build:macos
+
+      - name: Build macOS bundles and sign updater archive
+        if: needs.release-info.outputs.tag != ''
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun run build:macos:release
+
+      - name: Verify app and collect artifacts
+        env:
+          TAG: ${{ needs.release-info.outputs.tag }}
+        run: |
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          for app in "$bundle"/macos/*.app; do
+            architectures=" $(lipo -archs "$app/Contents/MacOS/yet-another-player") "
+            [[ "$architectures" == *" arm64 "* && "$architectures" == *" x86_64 "* ]]
+            codesign --verify --deep --strict "$app"
+          done
+          mkdir macos-artifacts
+          cp "$bundle"/dmg/*.dmg macos-artifacts/
+          if [[ -n "$TAG" ]]; then
+            cp "$bundle"/macos/*.app.tar.gz "$bundle"/macos/*.app.tar.gz.sig macos-artifacts/
+          fi
+
+      - name: Upload macOS bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal-bundle
+          path: macos-artifacts/
+          if-no-files-found: error
+
+  build-arch:
+    name: Build Arch Linux x86_64 package
+    needs: [release-info, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Linux application payload
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-deb
+          path: arch-input
+
+      - name: Build pacman package
+        env:
+          YAP_ARCH_VERSION: ${{ needs.release-info.outputs.version || '0.0.0' }}
+        run: |
+          cp arch-input/*_amd64.deb arch-input/yap.deb
+          mkdir arch-artifacts
+          docker run --rm --env YAP_ARCH_VERSION \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/source,readonly \
+            --mount type=bind,source="$GITHUB_WORKSPACE/arch-input",target=/input,readonly \
+            --mount type=bind,source="$GITHUB_WORKSPACE/arch-artifacts",target=/output \
+            archlinux:base-devel bash /source/packaging/arch/build-package.sh
+
+      - name: Setup Bun
+        if: needs.release-info.outputs.tag != ''
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        if: needs.release-info.outputs.tag != ''
+        run: bun install --frozen-lockfile
+
+      - name: Sign Arch updater package
+        if: needs.release-info.outputs.tag != ''
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun x tauri signer sign arch-artifacts/*.pkg.tar.zst
+
+      - name: Upload pacman package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-x86_64-pacman
+          path: arch-artifacts/
+          if-no-files-found: error
+
   publish-release:
     name: Create desktop release draft
-    needs: [release-info, build-windows, build-linux]
+    needs: [release-info, build-windows, build-linux, build-macos, build-arch]
     if: needs.release-info.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
@@ -216,6 +334,18 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Download macOS bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-universal-bundle
+          path: release-assets
+
+      - name: Download Arch package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-x86_64-pacman
+          path: release-assets
+
       - name: Generate updater manifest
         env:
           TAG: ${{ needs.release-info.outputs.tag }}
@@ -230,10 +360,12 @@ jobs:
           draft: true
           prerelease: false
           body: |
-            Download `yet-another-player_*_x64-setup.exe` for Windows.
+            - Windows x64: run the NSIS setup executable.
+            - macOS (Apple Silicon and Intel): open the universal DMG and drag YAP into Applications. If Gatekeeper blocks first launch, use Privacy & Security → Open Anyway.
+            - Debian/Ubuntu x86_64: install the `.deb` package.
+            - Other Linux x86_64 distributions: make the `.AppImage` executable and launch it.
+            - Arch Linux x86_64: install the `.pkg.tar.zst` with `sudo pacman -U ./<package>.pkg.tar.zst`.
 
-            On Linux x86_64, use the `.deb` package on Debian/Ubuntu or download the `.AppImage` and make it executable.
-
-            Installed apps check GitHub Releases for updates automatically.
+            YAP checks GitHub Releases for updates and verifies downloads. On Arch, YAP downloads the verified package and shows the pacman command to install it.
           files: release-assets/*
           fail_on_unmatched_files: true

@@ -27,6 +27,7 @@ function platform(suffix) {
   };
 }
 
+const macos = platform('.app.tar.gz');
 const manifest = {
   version,
   pub_date: new Date().toISOString(),
@@ -34,6 +35,9 @@ const manifest = {
     'windows-x86_64': platform('-setup.exe'),
     'linux-x86_64-appimage': platform('_amd64.AppImage'),
     'linux-x86_64-deb': platform('_amd64.deb'),
+    'linux-x86_64-pacman': platform('-x86_64.pkg.tar.zst'),
+    'darwin-aarch64': macos,
+    'darwin-x86_64': macos,
   },
 };
 

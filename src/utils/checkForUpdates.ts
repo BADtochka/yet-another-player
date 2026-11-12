@@ -1,12 +1,22 @@
 import { create } from 'zustand';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater';
 import { logWarn } from '@/utils/appLogs';
 import { toast } from '@/utils/toast';
 
 const UPDATE_TOAST_ID = 'app-update';
-export const useAvailableUpdate = create<{ update?: Update; installing: boolean }>(() => ({ installing: false }));
+type AvailableUpdate =
+  | { kind: 'standard'; version: string; installer: Update }
+  | { kind: 'arch'; version: string };
+
+export const useAvailableUpdate = create<{
+  update?: AvailableUpdate;
+  installing: boolean;
+  pacmanCommand?: string;
+}>(() => ({ installing: false }));
 
 const formatDownloadProgress = (downloaded: number, total?: number) => {
   if (total && total > 0) {
@@ -40,7 +50,7 @@ const handleDownloadProgress = (
   }
 };
 
-export const installUpdate = async (update: Update) => {
+export const installUpdate = async (update: AvailableUpdate) => {
   if (useAvailableUpdate.getState().installing) return;
   useAvailableUpdate.setState({ installing: true });
   const progress = { downloaded: 0, total: undefined as number | undefined };
@@ -48,23 +58,40 @@ export const installUpdate = async (update: Update) => {
   toast.loading('Загрузка обновления...', { id: UPDATE_TOAST_ID });
 
   try {
-    await update.downloadAndInstall((event) => handleDownloadProgress(event, progress));
+    if (update.kind === 'arch') {
+      const path = await invoke<string>('download_arch_update', { version: update.version });
+      const pacmanCommand = `sudo pacman -U -- '${path.replace(/'/g, "'\\''")}'`;
+      useAvailableUpdate.setState({ pacmanCommand });
+      toast.message('Пакет скачан и проверен', {
+        id: UPDATE_TOAST_ID,
+        description: pacmanCommand,
+        duration: Number.POSITIVE_INFINITY,
+        action: {
+          label: 'Показать пакет',
+          onClick: () => void revealItemInDir(path).catch((error) => toast.error('Не удалось открыть папку', error)),
+        },
+      });
+      return;
+    }
+
+    await update.installer.downloadAndInstall((event) => handleDownloadProgress(event, progress));
     await relaunch();
   } catch (error) {
+    if (update.kind === 'arch') useAvailableUpdate.setState({ update: undefined, pacmanCommand: undefined });
     toast.error('Не удалось установить обновление', error, { id: UPDATE_TOAST_ID });
   } finally {
     useAvailableUpdate.setState({ installing: false });
   }
 };
 
-const showUpdateAvailable = (update: Update) => {
-  useAvailableUpdate.setState({ update });
+const showUpdateAvailable = (update: AvailableUpdate) => {
+  useAvailableUpdate.setState({ update, pacmanCommand: undefined });
   toast.message(`Доступна версия ${update.version}`, {
     id: UPDATE_TOAST_ID,
     duration: Number.POSITIVE_INFINITY,
-    description: 'Нажмите «Установить», чтобы обновить приложение.',
+    description: update.kind === 'arch' ? 'Скачайте пакет и установите его через pacman.' : 'Нажмите «Установить», чтобы обновить приложение.',
     action: {
-      label: 'Установить',
+      label: update.kind === 'arch' ? 'Скачать' : 'Установить',
       onClick: () => {
         void installUpdate(update);
       },
@@ -77,13 +104,15 @@ const checkForUpdate = async () => {
     return { status: 'unavailable' as const };
   }
 
-  const update = await check();
-
-  if (!update) {
-    return { status: 'up-to-date' as const };
+  if (await invoke<boolean>('uses_arch_package')) {
+    const version = await invoke<string | null>('check_arch_update');
+    if (version) return { status: 'available' as const, update: { kind: 'arch' as const, version } };
+  } else {
+    const installer = await check();
+    if (installer) return { status: 'available' as const, update: { kind: 'standard' as const, version: installer.version, installer } };
   }
 
-  return { status: 'available' as const, update };
+  return { status: 'up-to-date' as const };
 };
 
 export const checkForAppUpdates = async () => {

@@ -13,6 +13,7 @@ mod genius;
 mod library;
 mod linux_audio;
 mod lyrica;
+mod updates;
 
 pub struct MusicFolders {
     canonical: Arc<Mutex<Vec<PathBuf>>>,
@@ -160,6 +161,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             append_app_log,
+            updates::uses_arch_package,
+            updates::check_arch_update,
+            updates::download_arch_update,
             audio::audio_control,
             external_tools::check_yt_dlp,
             external_tools::get_yt_dlp_location,

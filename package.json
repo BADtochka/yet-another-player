@@ -9,6 +9,8 @@
     "build:tauri": "tauri build",
     "build:linux": "tauri build --ci --bundles deb,appimage",
     "build:linux:release": "tauri build --ci --bundles deb,appimage --config src-tauri/tauri.release.conf.json",
+    "build:macos": "tauri build --ci --target universal-apple-darwin --bundles app,dmg",
+    "build:macos:release": "tauri build --ci --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json",
     "build:windows": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis",
     "build:windows:release": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json",
     "build:windows:native": "tauri build --target x86_64-pc-windows-msvc --bundles nsis",
