@@ -21,6 +21,7 @@ mv "$ROOT/package.json.tmp" "$ROOT/package.json"
 jq --arg version "$VERSION" '.version = $version' "$ROOT/src-tauri/tauri.conf.json" >"$ROOT/src-tauri/tauri.conf.json.tmp"
 mv "$ROOT/src-tauri/tauri.conf.json.tmp" "$ROOT/src-tauri/tauri.conf.json"
 
-sed -i "s/^version = \".*\"/version = \"$VERSION\"/" "$ROOT/src-tauri/Cargo.toml"
+sed "s/^version = \".*\"/version = \"$VERSION\"/" "$ROOT/src-tauri/Cargo.toml" >"$ROOT/src-tauri/Cargo.toml.tmp"
+mv "$ROOT/src-tauri/Cargo.toml.tmp" "$ROOT/src-tauri/Cargo.toml"
 
 echo "Set project version to $VERSION"

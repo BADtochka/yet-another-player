@@ -1,9 +1,6 @@
 import { cn } from 'badlib';
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
-
-import { Minus } from '@/components/Icons/Minus';
-import { Next } from '@/components/Icons/Next';
-import { SelectOptionRow } from '@/components/Select/SelectOptionRow';
+import { Icon } from '@/components/Icons/Icon';
 
 export type SelectOption<T extends string = string> = {
   value: T;
@@ -11,6 +8,7 @@ export type SelectOption<T extends string = string> = {
 };
 
 export type SelectProps<T extends string = string> = {
+  label: string;
   value: T;
   options: readonly SelectOption<T>[];
   onChange?: (value: T) => void;
@@ -20,111 +18,72 @@ export type SelectProps<T extends string = string> = {
   placeholder?: string;
 };
 
-export const Select = <T extends string = string>({
-  value,
-  options,
-  onChange,
-  disabled = false,
-  className,
-  id,
-  placeholder = 'Выберите значение',
-}: SelectProps<T>) => {
+export function Select<T extends string>({
+  label, value, options, onChange, disabled, className, id, placeholder = 'Выберите значение',
+}: SelectProps<T>) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const listboxId = useId();
-  const selectedOption = options.find((option) => option.value === value);
-  const label = selectedOption?.label ?? placeholder;
+  const [active, setActive] = useState(0);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const listId = useId();
+  const selected = options.findIndex((option) => option.value === value);
+  const close = () => setOpen(false);
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
+    if (!open) return;
+    const onOutside = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) close();
     };
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
+    document.addEventListener('pointerdown', onOutside);
+    return () => document.removeEventListener('pointerdown', onOutside);
   }, [open]);
 
-  const onToggle = () => {
-    if (disabled) {
-      return;
-    }
-
-    setOpen((current) => !current);
+  const show = () => {
+    trigger.current?.focus({ preventScroll: true });
+    setActive(Math.max(0, selected));
+    setOpen(true);
   };
-
-  const onSelect = (nextValue: T) => {
-    if (disabled) {
-      return;
-    }
-
-    onChange?.(nextValue);
-    setOpen(false);
+  const choose = (option: SelectOption<T>) => {
+    onChange?.(option.value);
+    close();
+    trigger.current?.focus();
   };
 
   return (
-    <div ref={rootRef} id={id} className={cn('relative inline-flex w-full flex-col', className)}>
-      <div
-        role='button'
-        tabIndex={disabled ? -1 : 0}
-        aria-expanded={open}
-        aria-haspopup='listbox'
-        aria-controls={listboxId}
-        onClick={onToggle}
+    <div ref={root} className={cn('kit-select', className)} data-open={open}
+      onFocusOut={(event) => { if (!root.current?.contains(event.relatedTarget as Node | null)) close(); }}>
+      <button ref={trigger} id={id} type='button' role='combobox' aria-label={label} aria-expanded={open}
+        aria-haspopup='listbox' aria-controls={listId} aria-activedescendant={open ? `${listId}-${active}` : undefined}
+        disabled={disabled || !options.length} onClick={open ? close : show}
         onKeyDown={(event) => {
-          if (disabled) {
+          const { key } = event;
+          if (key === 'Escape' && open) { event.preventDefault(); close(); return; }
+          if (open && (key === 'Enter' || key === ' ')) {
+            event.preventDefault();
+            const option = options[active];
+            if (option) choose(option);
             return;
           }
-
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onToggle();
-          }
-        }}
-        className={cn(
-          'flex w-full items-center justify-between gap-2.5 rounded-lg bg-[#020a1d] p-2.5',
-          disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-        )}
-      >
-        <span className='py-[7px] text-base/none font-medium text-[#d9d9d9]'>{label}</span>
-        <span className='inline-flex size-6 shrink-0 items-center justify-center text-[#a3a5aa]'>
-          {open ? <Next size={16} aria-hidden /> : <Minus size={16} className='rotate-90' aria-hidden />}
-        </span>
-      </div>
-
-      {open ? (
-        <div
-          id={listboxId}
-          role='listbox'
-          className='absolute top-full right-0 left-0 z-20 mt-0 flex flex-col border border-[#414141] bg-[#020a1d]'
-        >
-          {options.map((option) => (
-            <SelectOptionRow
-              key={option.value}
-              selected={option.value === value}
-              onSelect={() => onSelect(option.value)}
-            >
+          const index = { ArrowDown: active + 1, ArrowUp: active - 1, Home: 0, End: options.length - 1 }[key];
+          if (index === undefined) return;
+          event.preventDefault();
+          if (!open) show();
+          else setActive(Math.min(options.length - 1, Math.max(0, index)));
+        }}>
+        <span>{options[selected]?.label ?? placeholder}</span>
+        <Icon name={open ? 'ChevronUp' : 'ChevronDown'} size={16} />
+      </button>
+      {open && (
+        <ul id={listId} role='listbox' aria-label={label}>
+          {options.map((option, index) => (
+            <li id={`${listId}-${index}`} key={option.value} role='option' aria-selected={index === selected}
+              data-active={index === active} onPointerDown={(event) => event.preventDefault()}
+              onClick={() => choose(option)}>
               {option.label}
-            </SelectOptionRow>
+            </li>
           ))}
-        </div>
-      ) : null}
+        </ul>
+      )}
     </div>
   );
-};
+}

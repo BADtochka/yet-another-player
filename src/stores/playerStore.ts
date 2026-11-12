@@ -1,133 +1,279 @@
-import { createTauriStore, getStoreState, saveNow } from '@tauri-store/zustand';
+import { saveNow } from '@tauri-store/zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import { useMusicStore } from '@/stores/musicStore';
+import { subscribeToCatalog, tracksByPaths, type TrackQuery } from '@/hooks/useLibrary';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { type Track } from '@/types/Track';
-import { getNextTrack, getPreviousTrack } from '@/utils/playQueue';
+import { type VolumeNormalizationLevel } from '@/types/Settings';
+import { toast } from '@/utils/toast';
+
+type RepeatMode = 'off' | 'all' | 'one';
+
+export type AudioPreview = {
+  id: number;
+  title: string;
+  artist: string;
+  loading: boolean;
+  playing: boolean;
+  position: number;
+  duration: number | null;
+};
+
+type AudioSnapshot = {
+  revision: number;
+  queueGeneration: number;
+  queueIndex: number;
+  queueLength: number;
+  queuePaths?: string[];
+  nextPath: string | null;
+  shuffle: boolean;
+  repeat: RepeatMode;
+  path: string | null;
+  playing: boolean;
+  position: number;
+  duration: number | null;
+  volume: number;
+  error: string | null;
+  preview: AudioPreview | null;
+};
+
+type AudioAction =
+  | { type: 'snapshot' | 'next' | 'previous' | 'toggleShuffle' | 'cycleRepeat' }
+  | { type: 'jump'; index: number; generation: number }
+  | { type: 'configure'; volume: number; normalization: VolumeNormalizationLevel | 'off' }
+  | { type: 'queue'; tracks: Pick<Track, 'path' | 'replayGainDb'>[]; index: number; position: number; playing: boolean }
+  | { type: 'playing'; playing: boolean }
+  | { type: 'volume'; volume: number }
+  | { type: 'preparePreview'; title: string; artist: string }
+  | { type: 'closePreview'; id: number; keepPaused?: boolean }
+  | { type: 'previewPlaying'; id: number; playing: boolean }
+  | { type: 'previewSeek'; id: number; position: number }
+  | { type: 'seek'; path: string; position: number };
 
 type PlayerState = {
+  queueGeneration: number;
+  queueIndex: number;
+  shuffle: boolean;
+  repeat: RepeatMode;
+  toggleShuffle: () => void;
+  cycleRepeat: () => void;
+  jumpToQueueItem: (index: number, generation: number) => void;
   volume: number;
   currentTrack: Track | null;
   currentTrackPath: string | null;
+  nextTrackPath: string | null;
   playing: boolean;
-  seeking: boolean;
   currentTime: number;
   duration: number;
+  preview: AudioPreview | null;
   setVolume: (volume: number) => void;
-  setCurrentTrack: (track: Track | null) => void;
   setPlaying: (playing: boolean) => void;
-  setSeeking: (seeking: boolean) => void;
-  setCurrentTime: (currentTime: number) => void;
-  setDuration: (duration: number) => void;
+  commitSeek: (path: string, time: number) => void;
+  playTrack: (track: Track, queue: Track[]) => void;
   playNext: () => void;
   playPrevious: () => void;
 };
 
-const clampVolume = (volume: number) => {
-  if (!Number.isFinite(volume)) {
-    return 0.1;
-  }
-
-  return Math.min(1, Math.max(0, volume));
-};
-
 const PLAYER_STORE_ID = 'player';
+let lastSnapshot: AudioSnapshot | undefined;
+let lastSavedAt = 0;
+let saveInFlight: Promise<void> | undefined;
+let trackLookup = 0;
 
-export const loadPersistedPlaybackPosition = async () => {
-  const saved = await getStoreState<{ currentTime?: unknown }>(PLAYER_STORE_ID);
-
-  if (typeof saved.currentTime === 'number' && Number.isFinite(saved.currentTime) && saved.currentTime > 0) {
-    usePlayerStore.getState().setCurrentTime(saved.currentTime);
-  }
-};
-
-export const savePlayerStateOnExit = async () => {
-  const { volume, currentTrackPath, currentTime } = usePlayerStore.getState();
-
-  await invoke('plugin:zustand|patch', {
-    id: PLAYER_STORE_ID,
-    state: {
-      volume,
-      currentTrackPath,
-      currentTime,
-    },
-  });
-  await saveNow(PLAYER_STORE_ID);
-};
-
-export const restorePersistedPlayerState = () => {
-  const player = usePlayerStore.getState();
-  const tracks = useMusicStore.getState().tracks;
-  const volume = clampVolume(player.volume);
-
-  if (volume !== player.volume) {
-    player.setVolume(volume);
-  }
-
-  if (!player.currentTrackPath) {
-    if (player.currentTrack) {
-      player.setCurrentTrack(null);
+const refreshCurrentTrack = (path: string | null) => {
+  const lookup = ++trackLookup;
+  if (!path) return;
+  void tracksByPaths([path]).then(([track]) => {
+    if (lookup === trackLookup && usePlayerStore.getState().currentTrackPath === path) {
+      const duration = lastSnapshot?.duration ?? track?.duration ?? 0;
+      usePlayerStore.setState({ currentTrack: track ?? null, duration });
     }
+  }).catch((error) => console.warn('Could not load track metadata', error));
+};
 
+const persistedState = () => {
+  const { volume, currentTrackPath, currentTime } = usePlayerStore.getState();
+  return { volume, currentTrackPath, currentTime };
+};
+
+const savePlayerState = () => {
+  const previousSave = saveInFlight ?? Promise.resolve();
+  const state = persistedState();
+  const write = previousSave.catch(() => undefined).then(async () => {
+    await invoke('plugin:zustand|patch', { id: PLAYER_STORE_ID, state });
+    await saveNow(PLAYER_STORE_ID);
+  });
+  saveInFlight = write;
+  return write;
+};
+
+const applySnapshot = (snapshot: AudioSnapshot) => {
+  const previous = lastSnapshot;
+  if (previous && snapshot.revision <= previous.revision) {
     return;
   }
+  lastSnapshot = snapshot;
+  const state = usePlayerStore.getState();
+  const currentTrack = snapshot.path === state.currentTrackPath ? state.currentTrack : null;
 
-  const track = tracks.find((item) => item.path === player.currentTrackPath) ?? null;
+  usePlayerStore.setState({
+    queueGeneration: snapshot.queueGeneration,
+    queueIndex: snapshot.queueIndex,
+    shuffle: snapshot.shuffle,
+    repeat: snapshot.repeat,
+    currentTrack,
+    currentTrackPath: snapshot.path,
+    nextTrackPath: snapshot.nextPath,
+    playing: snapshot.playing,
+    currentTime: snapshot.position,
+    duration: snapshot.duration ?? currentTrack?.duration ?? 0,
+    volume: snapshot.volume,
+    preview: snapshot.preview,
+  });
+  if (snapshot.error && snapshot.error !== previous?.error) {
+    toast.error(snapshot.error);
+  }
 
-  player.setCurrentTrack(track);
-
-  if (!track) {
-    player.setCurrentTime(0);
+  const changedTrack = previous?.path !== snapshot.path;
+  if (changedTrack) refreshCurrentTrack(snapshot.path);
+  const paused = previous?.playing && !snapshot.playing;
+  const checkpoint = snapshot.playing && Date.now() - lastSavedAt >= 5000;
+  if (snapshot.path && (changedTrack || paused || checkpoint)) {
+    lastSavedAt = Date.now();
+    void savePlayerState().catch((error) => console.warn('Could not save playback position', error));
   }
 };
 
-export const usePlayerStore = create<PlayerState>((set, get) => ({
+const send = async (action: AudioAction) => {
+  const snapshot = await invoke<AudioSnapshot>('audio_control', { action });
+  applySnapshot(snapshot);
+  if (action.type === 'seek' && snapshot.path === action.path && !snapshot.error) {
+    void savePlayerState().catch((error) => console.warn('Could not save playback position', error));
+  }
+  return snapshot;
+};
+
+const dispatch = (action: AudioAction) => {
+  void send(action).catch((error) => toast.error('Не удалось выполнить команду плеера', error));
+};
+
+const queueAction = (queue: Track[], index: number, position: number, playing: boolean): AudioAction => ({
+  type: 'queue',
+  tracks: queue.map(({ path, replayGainDb }) => ({ path, replayGainDb })),
+  index,
+  position,
+  playing,
+});
+
+type QueueTarget = { type: 'id'; id: number } | { type: 'path'; path: string } | { type: 'first' | 'last' };
+const libraryOrder: TrackQuery = { sort: 'path', text: '' };
+
+const startTrackQuery = async (query: TrackQuery, target: QueueTarget, position: number, playing: boolean) => {
+  const snapshot = await invoke<AudioSnapshot | null>('library_play_tracks', { query, target, position, playing });
+  if (snapshot) applySnapshot(snapshot);
+  return snapshot;
+};
+
+export const playTrackQuery = (query: TrackQuery, target: QueueTarget) =>
+  void startTrackQuery(query, target, 0, true).catch((error) => toast.error('Не удалось открыть очередь', error));
+
+export const savePlayerStateOnExit = async () => {
+  const { preview } = await send({ type: 'snapshot' });
+  if (preview) await send({ type: 'closePreview', id: preview.id, keepPaused: true });
+  await savePlayerState();
+};
+
+export const preparePreview = async (title: string, artist: string) => {
+  const { preview } = await send({ type: 'preparePreview', title, artist });
+  if (!preview) throw new Error('Предпросмотр отменён.');
+  return preview.id;
+};
+
+export const closePreview = (id: number) => dispatch({ type: 'closePreview', id });
+export const setPreviewPlaying = (id: number, playing: boolean) => dispatch({ type: 'previewPlaying', id, playing });
+export const seekPreview = (id: number, position: number) => dispatch({ type: 'previewSeek', id, position });
+
+export const startPlayer = async () => {
+  const saved = await invoke<{ volume?: number; currentTrackPath?: string; currentTime?: number }>(
+    'plugin:zustand|load',
+    { id: PLAYER_STORE_ID },
+  );
+  const snapshot = await invoke<AudioSnapshot>('audio_control', { action: { type: 'snapshot' } });
+  await listen<AudioSnapshot>('audio:state', (event) => applySnapshot(event.payload));
+
+  const { volumeNormEnabled, volumeNormLevel } = useSettingsStore.getState();
+  const volume = snapshot.path ? snapshot.volume : saved.volume ?? 0.1;
+  await send({ type: 'configure', volume, normalization: volumeNormEnabled ? volumeNormLevel : 'off' });
+  if (!snapshot.path && saved.currentTrackPath) {
+    const position = Number.isFinite(saved.currentTime) ? Math.max(0, saved.currentTime ?? 0) : 0;
+    if (!await startTrackQuery(libraryOrder, { type: 'path', path: saved.currentTrackPath }, position, false)) {
+      const path = await invoke<string | null>('library_resolve_path', { path: saved.currentTrackPath });
+      if (path && path !== saved.currentTrackPath) {
+        await startTrackQuery(libraryOrder, { type: 'path', path }, position, false);
+      }
+    }
+  }
+
+  useSettingsStore.subscribe((state, previous) => {
+    if (state.volumeNormEnabled !== previous.volumeNormEnabled || state.volumeNormLevel !== previous.volumeNormLevel) {
+      dispatch({
+        type: 'configure',
+        volume: usePlayerStore.getState().volume,
+        normalization: state.volumeNormEnabled ? state.volumeNormLevel : 'off',
+      });
+    }
+  });
+
+  subscribeToCatalog(() => refreshCurrentTrack(usePlayerStore.getState().currentTrackPath));
+};
+
+export const inspectQueue = async (offset: number) => {
+  const { queuePaths = [], queueGeneration, queueLength } = await invoke<AudioSnapshot>('audio_control', {
+    action: { type: 'inspectQueue', offset },
+  });
+  const metadata = new Map((await tracksByPaths(queuePaths)).map((track) => [track.path, track]));
+  const entries = queuePaths.map((path) => ({ path, track: metadata.get(path) }));
+  return { entries, generation: queueGeneration, length: queueLength };
+};
+
+export const usePlayerStore = create<PlayerState>((_set, get) => ({
+  queueGeneration: 0,
+  queueIndex: 0,
+  nextTrackPath: null,
+  shuffle: false,
+  repeat: 'all',
+  toggleShuffle: () => dispatch({ type: 'toggleShuffle' }),
+  cycleRepeat: () => dispatch({ type: 'cycleRepeat' }),
+  jumpToQueueItem: (index, generation) => dispatch({ type: 'jump', index, generation }),
   volume: 0.1,
   currentTrack: null,
   currentTrackPath: null,
   playing: false,
-  seeking: false,
   currentTime: 0,
   duration: 0,
-  setVolume: (volume) => set({ volume: clampVolume(volume) }),
-  setCurrentTrack: (currentTrack) =>
-    set({
-      currentTrack,
-      currentTrackPath: currentTrack?.path ?? null,
-    }),
-  setPlaying: (playing) => set({ playing }),
-  setSeeking: (seeking) => set({ seeking }),
-  setCurrentTime: (currentTime) => set({ currentTime }),
-  setDuration: (duration) => set({ duration }),
-  playNext: () => {
-    const { currentTrack } = get();
-    const tracks = useMusicStore.getState().tracks;
-    const next = getNextTrack(tracks, currentTrack);
-
-    if (!next) {
-      set({ playing: false, currentTime: 0 });
-      return;
+  preview: null,
+  setVolume: (volume) => dispatch({ type: 'volume', volume }),
+  setPlaying: (playing) => dispatch({ type: 'playing', playing }),
+  commitSeek: (path, position) => dispatch({ type: 'seek', path, position }),
+  playTrack: (track, queue) => {
+    const index = queue.findIndex((item) => item.path === track.path);
+    if (index !== -1) {
+      dispatch(queueAction(queue, index, 0, true));
     }
-
-    set({ currentTrack: next, currentTrackPath: next.path, currentTime: 0, playing: true });
+  },
+  playNext: () => {
+    if (get().currentTrackPath) {
+      dispatch({ type: 'next' });
+    } else {
+      playTrackQuery(libraryOrder, { type: 'first' });
+    }
   },
   playPrevious: () => {
-    const { currentTrack } = get();
-    const tracks = useMusicStore.getState().tracks;
-    const previous = getPreviousTrack(tracks, currentTrack);
-
-    if (!previous) {
-      set({ playing: false, currentTime: 0 });
-      return;
+    if (get().currentTrackPath) {
+      dispatch({ type: 'previous' });
+    } else {
+      playTrackQuery(libraryOrder, { type: 'last' });
     }
-
-    set({ currentTrack: previous, currentTrackPath: previous.path, currentTime: 0, playing: true });
   },
 }));
-
-export const playerStoreHandler = createTauriStore(PLAYER_STORE_ID, usePlayerStore, {
-  saveOnChange: true,
-  saveOnExit: false,
-  filterKeys: ['volume', 'currentTrackPath'],
-  filterKeysStrategy: 'pick',
-});

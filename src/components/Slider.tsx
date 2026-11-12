@@ -2,6 +2,7 @@ import { type ComponentChildren } from 'preact';
 import { useRef } from 'preact/hooks';
 
 export type SliderProps = {
+  label: string;
   value: number;
   min?: number;
   max?: number;
@@ -28,6 +29,7 @@ const snapToStep = (value: number, min: number, max: number, step: number) => {
 const mergeClassName = (...parts: Array<string | false | undefined>) => parts.filter(Boolean).join(' ');
 
 export const Slider = ({
+  label,
   value,
   min = 0,
   max = 1,
@@ -62,11 +64,12 @@ export const Slider = ({
   };
 
   const onPointerDown = (event: PointerEvent) => {
-    if (disabled) {
+    if (disabled || !event.isPrimary || event.button !== 0) {
       return;
     }
 
     draggingRef.current = true;
+    trackRef.current?.focus({ preventScroll: true });
     trackRef.current?.setPointerCapture(event.pointerId);
     onDragStart?.();
 
@@ -88,39 +91,61 @@ export const Slider = ({
     }
 
     draggingRef.current = false;
-    trackRef.current?.releasePointerCapture(event.pointerId);
-    onValueCommit?.(valueFromClientX(event.clientX));
+    if (trackRef.current?.hasPointerCapture(event.pointerId)) {
+      trackRef.current.releasePointerCapture(event.pointerId);
+    }
+    onValueCommit?.(event.type === 'pointercancel' ? normalizedValue : valueFromClientX(event.clientX));
+  };
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (disabled || draggingRef.current) {
+      return;
+    }
+
+    const keyboardStep = Math.max(step, range / 100);
+    const targets: Record<string, number> = {
+      ArrowLeft: normalizedValue - keyboardStep,
+      ArrowDown: normalizedValue - keyboardStep,
+      ArrowRight: normalizedValue + keyboardStep,
+      ArrowUp: normalizedValue + keyboardStep,
+      Home: min,
+      End: max,
+    };
+    const target = targets[event.key];
+    if (typeof target !== 'number') {
+      return;
+    }
+
+    event.preventDefault();
+    const next = snapToStep(target, min, max, step);
+    onValueChange?.(next);
+    onValueCommit?.(next);
   };
 
   return (
     <div
       ref={trackRef}
       role='slider'
+      aria-label={label}
+      tabIndex={disabled ? -1 : 0}
+      onKeyDown={onKeyDown}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={normalizedValue}
       aria-disabled={disabled}
-      className={mergeClassName(
-        'relative flex h-11 w-full touch-none items-center select-none group',
-        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-        className,
-      )}
+      className={mergeClassName('kit-slider', className)}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      <div className='pointer-events-none absolute inset-x-0 h-1.5 rounded-[10px] bg-[#182853]' />
+      <div className='kit-slider-track' />
       <div
-        className='pointer-events-none absolute left-0 h-1.5 rounded-[10px] bg-[#d9d9d9]'
+        className='kit-slider-fill'
         style={{ width: `${percent}%` }}
       />
-      {showThumb ? (
-        <div
-          className='pointer-events-none absolute size-3 -translate-x-1/2 rounded-full outline-[3px] outline-transparent group-hover:outline-[#7491e280] transition-colors bg-[#d9d9d9]'
-          style={{ left: `${percent}%` }}
-        />
-      ) : null}
+      <div className='kit-slider-thumb' data-visibility={showThumb ? 'always' : 'interaction'}
+        style={{ left: `${percent}%` }} />
     </div>
   );
 };
@@ -131,5 +156,5 @@ export type SliderFrameProps = {
 };
 
 export const SliderFrame = ({ children, className }: SliderFrameProps) => (
-  <div className={mergeClassName('flex w-full max-w-[468px] items-center gap-2', className)}>{children}</div>
+  <div className={mergeClassName('kit-slider-frame', className)}>{children}</div>
 );

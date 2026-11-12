@@ -1,75 +1,37 @@
-# Tauri + Preact + Typescript
+# YAP · Yet Another Player
 
-This template should help get you started developing with Tauri, Preact and Typescript in Vite.
+YAP — плеер для музыки, которая хранится у тебя на компьютере. Выбери папку с треками, и YAP соберёт из них медиатеку с альбомами, исполнителями и обложками. Можно слушать музыку офлайн, собирать плейлисты и читать синхронизированные тексты, когда они доступны.
 
-## Recommended IDE Setup
+[Скачать YAP из GitHub Releases](https://github.com/BADtochka/yet-another-player/releases/latest)
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Первый запуск
 
-## Windows Build From WSL
+Нажми **«Выбрать папку»** и укажи, где лежит твоя музыка. YAP просканирует файлы и откроет медиатеку. Другие папки можно добавить позже в настройках.
 
-Install Bun and Rust in WSL, then prepare the Windows cross-compile toolchain:
+![Первый запуск YAP с кнопкой «Выбрать папку»](docs/screenshots/first-launch.png)
 
-```sh
-./scripts/setup-wsl-windows-build.sh
-```
+## Как выглядит медиатека
 
-Build the Windows NSIS installer from WSL:
+На макете из Pixso открыт альбом с обложкой, списком треков и плеером внизу. В YAP можно искать по своей коллекции и переключаться между списком и сеткой.
 
-```sh
-bun install --frozen-lockfile
-bun run build:windows
-```
+![Макет заполненной медиатеки YAP с открытым альбомом и списком треков](docs/screenshots/library-demo.png)
 
-The installer is written to:
+Для поиска и загрузки музыки из YouTube Music установи **yt-dlp** в разделе **Настройки → Внешние инструменты**. Если хочешь сохранять загруженные треки в MP3, там же можно установить **FFmpeg**.
 
-`src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/yet-another-player_*_x64-setup.exe`
+## Установка
 
-Use `bun run build:windows:native` on Windows when building locally without cross-compilation.
+| Система | Как установить |
+| --- | --- |
+| Windows x64 | Запусти установщик `*-setup.exe`. |
+| macOS · Apple Silicon и Intel | Открой `.dmg` и перетащи YAP в папку «Программы». Если macOS заблокирует первый запуск, открой **Системные настройки → Конфиденциальность и безопасность → Всё равно открыть**. |
+| Debian / Ubuntu x86_64 | Установи `.deb` командой `sudo apt install ./имя-пакета.deb`. |
+| Arch Linux x86_64 | Установи `.pkg.tar.zst` командой `sudo pacman -U ./имя-пакета.pkg.tar.zst`. |
+| Другие дистрибутивы Linux x86_64 | Сделай `.AppImage` исполняемым и запусти его. |
 
-### Signed release build (updater artifacts)
+Если в последнем релизе пока нет установщика для твоей системы, проверь артефакты тестовых сборок. [GitHub Actions](https://github.com/BADtochka/yet-another-player/actions/workflows/windows-build.yml)
 
-Updater signatures are generated only when `TAURI_SIGNING_PRIVATE_KEY` is set:
+В релизной сборке можно проверить обновления в настройках. На Arch YAP проверит подпись скачанного пакета и покажет команду для установки через `pacman`.
 
-```sh
-export TAURI_SIGNING_PRIVATE_KEY="$(cat .tauri/signing.key)"
-bun run build:windows:release
-```
+## Участие в проекте
 
-This also produces `.sig` files next to the installer for GitHub Releases auto-update.
-
-By default the app scans the system audio directory, for example `%USERPROFILE%\Music` on Windows.
-
-## Auto-update (GitHub Releases)
-
-The app uses [Tauri updater](https://v2.tauri.app/plugin/updater/) and checks for updates on startup in production builds.
-
-1. Update the updater endpoint in `src-tauri/tauri.conf.json` if your GitHub repo URL differs from `BADtochka/yet-another-player`.
-2. Add repository secrets for release signing:
-   - `TAURI_SIGNING_PRIVATE_KEY` — full contents of `.tauri/signing.key` (generate with `bun run tauri signer generate -w .tauri/signing.key --ci`)
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — leave empty if the key has no password
-3. Create a release by pushing a tag:
-
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Or run **Windows build** manually in Actions, set **release tag** to `v0.1.0`, and pick the tag ref to build from.
-
-The `Windows build` workflow compiles the NSIS installer on tags, uploads `latest.json` and signatures, and creates a draft GitHub Release.
-
-## WSL Dev Audio
-
-`bun run tauri dev` automatically configures audio in WSL:
-
-- on WSLg (Windows 11) it uses `PULSE_SERVER=unix:/mnt/wslg/PulseServer`
-- PipeWire GStreamer plugins are disabled because they often break WebKit playback in WSL
-- `PULSE_LATENCY_MSEC=150` increases the PulseAudio buffer to reduce Web Audio underruns
-- otherwise it falls back to a null ALSA device to avoid PipeWire/ALSA startup errors
-
-If you still need real audio in WSL, run a PulseAudio server on Windows and expose it on port `4713`.
-
-Check **Settings → Diagnostics → Audio environment** to verify PulseAudio routing and whether Web Audio compression is enabled.
-
-WSL always uses native playback. Volume normalization uses ReplayGain tags from MP3 files on all platforms.
+Как запустить YAP из исходников, проверить изменения и собрать установщик, описано в [CONTRIBUTING.md](CONTRIBUTING.md). Код доступен по [лицензии MIT](LICENSE).

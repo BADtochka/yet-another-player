@@ -1,11 +1,7 @@
-import { musicStoreHandler, useMusicStore } from '@/stores/musicStore';
-import {
-  loadPersistedPlaybackPosition,
-  playerStoreHandler,
-  restorePersistedPlayerState,
-} from '@/stores/playerStore';
+import { loadCatalog } from '@/utils/parseMusic';
+import { startPlayer } from '@/stores/playerStore';
 import { settingsStoreHandler, useSettingsStore } from '@/stores/settingsStore';
-import { registerMusicRoots } from '@/utils/audioServer';
+import { registerMusicRoots } from '@/utils/musicFolders';
 
 let started = false;
 
@@ -24,32 +20,16 @@ export const startStores = async () => {
   const { musicFolders, setMusicFolders } = useSettingsStore.getState();
   setMusicFolders(musicFolders);
 
-  await musicStoreHandler.start();
-
-  const { tracks, setTracks } = useMusicStore.getState();
-  setTracks(tracks);
-
-  await playerStoreHandler.start();
-  await loadPersistedPlaybackPosition();
-  restorePersistedPlayerState();
-
-  useMusicStore.subscribe((_state, prev) => {
-    if (_state.tracks === prev.tracks) {
-      return;
-    }
-
-    restorePersistedPlayerState();
-  });
-
   useSettingsStore.subscribe((state, prev) => {
     if (foldersChanged(state.musicFolders, prev.musicFolders)) {
-      void registerMusicRoots(state.musicFolders);
+      void registerMusicRoots(state.musicFolders).catch((error) => console.warn('Could not register music folders', error));
     }
   });
 
   await registerMusicRoots(useSettingsStore.getState().musicFolders);
+  await loadCatalog();
+  await startPlayer();
 };
 
-export { useMusicStore } from '@/stores/musicStore';
 export { usePlayerStore } from '@/stores/playerStore';
 export { useSettingsStore } from '@/stores/settingsStore';

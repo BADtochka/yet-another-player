@@ -2,6 +2,8 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use lofty::{config::ParseOptions, file::TaggedFileExt, picture::PictureType, probe::Probe};
+
 const ID3_HEADER_SIZE: usize = 10;
 const METADATA_CHUNK_SIZE: usize = 1024 * 1024;
 
@@ -166,7 +168,9 @@ fn parse_pic_frame(frame: &[u8]) -> Option<(Vec<u8>, String)> {
 }
 
 fn frame_size_v2_2(bytes: &[u8], offset: usize) -> usize {
-    ((bytes[offset] as usize) << 16) | ((bytes[offset + 1] as usize) << 8) | bytes[offset + 2] as usize
+    ((bytes[offset] as usize) << 16)
+        | ((bytes[offset + 1] as usize) << 8)
+        | bytes[offset + 2] as usize
 }
 
 fn extract_cover_v2_2(bytes: &[u8], tag_end: usize) -> Option<(Vec<u8>, String)> {
@@ -264,7 +268,7 @@ pub fn extract_cover_from_mp3(path: &Path) -> Option<(Vec<u8>, String)> {
 
 pub fn load_cover(path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, &'static str)> {
     let (image, mime) = if cache_dir.as_os_str().is_empty() {
-        extract_cover_from_mp3(path)?
+        extract_cover(path)?
     } else {
         let cache_file = cache_file_for_path(cache_dir, path);
 
@@ -272,10 +276,40 @@ pub fn load_cover(path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, &'static st
             return Some(cached);
         }
 
-        let extracted = extract_cover_from_mp3(path)?;
+        let extracted = extract_cover(path)?;
         let _ = write_cached_cover(&cache_file, &extracted.1, &extracted.0);
         extracted
     };
 
     Some((image, content_type_for_extension(extension_for_mime(&mime))))
+}
+
+fn extract_cover(path: &Path) -> Option<(Vec<u8>, String)> {
+    let from_tags = || {
+        let options = ParseOptions::new().read_properties(false);
+        let file = Probe::open(path).ok()?.options(options).read().ok()?;
+        let mut pictures = file
+            .tags()
+            .iter()
+            .flat_map(|tag| tag.pictures())
+            .filter(|picture| {
+                matches!(
+                    picture.mime_type().map(|mime| mime.as_str()),
+                    Some("image/jpeg" | "image/png" | "image/webp")
+                )
+            });
+        let first = pictures.next()?;
+        let picture = if first.pic_type() == PictureType::CoverFront {
+            first
+        } else {
+            pictures
+                .find(|picture| picture.pic_type() == PictureType::CoverFront)
+                .unwrap_or(first)
+        };
+        Some((
+            picture.data().to_vec(),
+            picture.mime_type()?.as_str().to_owned(),
+        ))
+    };
+    from_tags().or_else(|| extract_cover_from_mp3(path))
 }

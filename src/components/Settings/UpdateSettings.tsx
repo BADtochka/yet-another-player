@@ -1,43 +1,45 @@
 import { getVersion } from '@tauri-apps/api/app';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useState } from 'preact/hooks';
-import { SettingsSection } from '@/components/Settings/SettingsSection';
-import { SettingsTextAction } from '@/components/Settings/SettingsTextAction';
-import { checkForAppUpdatesManually } from '@/utils/checkForUpdates';
+import { Button } from '@/components/Button';
+import { Icon } from '@/components/Icons/Icon';
+import { checkForAppUpdatesManually, installUpdate, useAvailableUpdate } from '@/utils/checkForUpdates';
+import { toast } from '@/utils/toast';
 
-export const UpdateSettings = () => {
-  const [version, setVersion] = useState<string | null>(null);
-  const [isChecking, setIsChecking] = useState(false);
+export function UpdateSettings() {
+  const [version, setVersion] = useState<string>();
+  const [checking, setChecking] = useState(false);
+  const { update, installing, pacmanCommand } = useAvailableUpdate();
 
   useEffect(() => {
-    void getVersion()
-      .then((appVersion) => setVersion(appVersion))
-      .catch(() => setVersion(null));
+    void getVersion().then(setVersion).catch(() => undefined);
   }, []);
 
-  const onCheckUpdates = async () => {
-    setIsChecking(true);
-
+  const check = async () => {
+    if (update) { await installUpdate(update); return; }
+    setChecking(true);
     try {
       await checkForAppUpdatesManually();
     } finally {
-      setIsChecking(false);
+      setChecking(false);
     }
   };
 
   return (
-    <SettingsSection title='О приложении'>
-      <div className='flex flex-col gap-4 p-2.5'>
-        <div className='flex items-center justify-between gap-5'>
-          <div className='flex min-w-0 flex-col gap-1'>
-            <p className='text-base font-medium text-[#d9d9d9]'>Версия</p>
-            <p className='text-sm font-medium text-[#8d8d8d]'>Проверить наличие обновлений на GitHub Releases</p>
-          </div>
-
-          <SettingsTextAction disabled={isChecking || version === null} onClick={onCheckUpdates}>
-            {isChecking ? 'Проверяю...' : version ? `v${version}` : '...'}
-          </SettingsTextAction>
-        </div>
+    <div className='settings-row'>
+      <div className='settings-row-info'>
+        <h3><button type='button' className='settings-source' aria-label='Открыть репозиторий YAP'
+          onClick={() => void openUrl('https://github.com/BADtochka/yet-another-player')
+            .catch((reason) => toast.error('Не удалось открыть репозиторий', reason))}>
+          yap <Icon name='Github' size={20} />
+        </button></h3>
+        {version && <p className='settings-version'>v{version}{update && ` → v${update.version}`}</p>}
+        {pacmanCommand && <code className='select-text break-all'>{pacmanCommand}</code>}
       </div>
-    </SettingsSection>
+      <Button variant='primary' icon={update ? 'Install' : 'Refresh'} data-update={update ? 'true' : undefined}
+        disabled={checking || installing} onClick={() => void check()}>
+        {installing ? 'Загружаем…' : checking ? 'Проверяем…' : update?.kind === 'arch' ? 'Скачать пакет' : update ? 'Доступно обновление' : 'Проверить обновление'}
+      </Button>
+    </div>
   );
-};
+}

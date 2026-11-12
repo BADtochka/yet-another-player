@@ -1,71 +1,120 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
+import { Button } from '@/components/Button';
+import { Icon, type IconName } from '@/components/Icons/Icon';
+import { Progress } from '@/components/Progress';
 import { useSettingsStore } from '@/stores';
-import { type TrackScanProgress } from '@/utils/getTracks';
-import { parseMusic } from '@/utils/parseMusic';
+import { registerMusicRoots } from '@/utils/musicFolders';
+import { cancelMusicScan, createScanId, parseMusic, type TrackScanProgress } from '@/utils/parseMusic';
 
 export const Route = createFileRoute('/setup')({
-  component: RouteComponent,
+  component: Setup,
 });
 
-function RouteComponent() {
+const features: Array<{ icon: IconName; title: string; description: string }> = [
+  { icon: 'Folder', title: 'Локально', description: 'Библиотека без трекеров и метрик' },
+  { icon: 'Color', title: 'Оформление', description: 'Список и сетка для вашей медиатеки' },
+  { icon: 'Playlist', title: 'Плейлисты', description: 'Плейлисты и подборки для удобной сортировки' },
+  { icon: 'Play', title: 'Управление', description: 'Привычные элементы управления и медиаклавиши' },
+  { icon: 'Settings', title: 'Настройки', description: 'Настройки медиатеки, инструментов и громкости' },
+  { icon: 'Lyrics', title: 'Текст треков', description: 'Синхронизированный текст из локальных файлов' },
+  { icon: 'Download', title: 'Внешние инструменты', description: 'Пополнение библиотеки открытыми инструментами' },
+  { icon: 'Queue', title: 'Очередь', description: 'Порядок воспроизведения всегда под рукой' },
+];
+
+function Setup() {
+  const musicFolders = useSettingsStore((state) => state.musicFolders);
   const addMusicFolder = useSettingsStore((state) => state.addMusicFolder);
-  const [musicLoaded, setMusicLoaded] = useState(false);
-  const [musicPath, setMusicPath] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [scanProgress, setScanProgress] = useState<TrackScanProgress | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [scanId, setScanId] = useState<string>();
+  const [progress, setProgress] = useState<TrackScanProgress>();
+  const [trackCount, setTrackCount] = useState<number>();
+  const [error, setError] = useState<string>();
   const navigate = useNavigate();
 
-  const selectMusicFolder = async () => {
-    setError(null);
-    setScanProgress(null);
-    setIsLoading(true);
+  useEffect(() => {
+    if (trackCount === undefined) return;
+    const timeout = window.setTimeout(() => void navigate({ to: '/tracks' }), 800);
+    return () => window.clearTimeout(timeout);
+  }, [trackCount, navigate]);
 
+  const selectMusicFolder = async () => {
+    setError(undefined);
+    setSelecting(true);
     try {
-      const selectedPath = await open({
+      const path = await open({
         title: 'Выберите папку с музыкой',
         directory: true,
         recursive: true,
         multiple: false,
       });
+      if (typeof path !== 'string') return;
 
-      if (typeof selectedPath !== 'string') {
+      const id = createScanId();
+      setScanId(id);
+      const result = await parseMusic({
+        id,
+        folders: [...new Set([...musicFolders, path])],
+        onProgress: setProgress,
+      });
+
+      if (result.cancelled) return;
+      if (result.catalog.trackCount === 0) {
+        await registerMusicRoots(musicFolders);
+        setError(result.unavailableFolders > 0 ? 'Не удалось прочитать папку.' : 'В этой папке нет аудиофайлов.');
         return;
       }
 
-      setMusicPath(selectedPath);
-      addMusicFolder(selectedPath);
-      await parseMusic({ onProgress: setScanProgress });
-      setMusicLoaded(true);
-      await navigate({ to: '/tracks' });
-    } catch (selectError) {
-      setError(selectError instanceof Error ? selectError.message : String(selectError));
+      addMusicFolder(path);
+      setTrackCount(result.catalog.trackCount);
+    } catch (error) {
+      await registerMusicRoots(musicFolders).catch(() => undefined);
+      setError(error instanceof Error ? error.message : String(error));
     } finally {
-      setIsLoading(false);
+      setSelecting(false);
+      setScanId(undefined);
+      setProgress(undefined);
     }
   };
 
+  if (trackCount !== undefined) {
+    return <section className='setup-screen setup-done' role='status'>
+      <img className='setup-logo' src='/logo.svg' alt='YAP' />
+      <span className='sr-only'>Медиатека готова. Треков найдено — {trackCount}</span>
+    </section>;
+  }
+
   return (
-    <div className='flex flex-col w-full justify-center items-center gap-4 text-white'>
-      <h1>Добро пожаловать</h1>
-      <button
-        type='button'
-        className='rounded-xl bg-white px-4 py-2 font-semibold text-[#01040c] disabled:opacity-60'
-        disabled={isLoading}
-        onClick={selectMusicFolder}
-      >
-        {isLoading ? 'Сканирую музыку...' : 'Выбрать папку с музыкой'}
-      </button>
-      {scanProgress && (
-        <p className='text-sm font-medium text-white/70'>
-          {scanProgress.current} / {scanProgress.total ?? '...'}
-        </p>
-      )}
-      {musicPath && <p className='max-w-xl text-center text-sm text-white/70'>{musicPath}</p>}
-      {musicLoaded && <p className='text-sm text-[#73d13d]'>Музыка загружена</p>}
-      {error && <p className='max-w-xl text-center text-sm text-[#da3e3e]'>{error}</p>}
-    </div>
+    <section className='setup-screen'>
+      <img className='setup-logo' src='/logo.svg' alt='YAP' />
+      <h1>Слушай музыку. <span>Свободно.</span></h1>
+      <ul className='setup-features'>
+        {features.map(({ icon, title, description }) => (
+          <li key={title}>
+            <h2><Icon name={icon} size={32} />{title}</h2>
+            <p>{description}</p>
+          </li>
+        ))}
+      </ul>
+      <div className='setup-panel' aria-live='polite'>
+        {scanId ? (
+          <>
+            <p>Поиск музыки в выбранной папке…</p>
+            <Progress label='Сканирование музыки' max={progress?.total} value={progress?.current} counts />
+            <Button variant='danger' icon='X' disabled={!progress}
+              onClick={() => void cancelMusicScan(scanId).catch((reason) => setError(String(reason)))}>Отмена</Button>
+          </>
+        ) : (
+          <>
+            <p>Выберите папку с вашей музыкальной библиотекой или укажите место, где хотите собрать новую.</p>
+            <Button variant='primary' icon='Folder' disabled={selecting} onClick={() => void selectMusicFolder()}>
+              {selecting ? 'Выбираем папку…' : 'Выбрать папку'}
+            </Button>
+          </>
+        )}
+        {error && <p role='alert' className='kit-error'>{error}</p>}
+      </div>
+    </section>
   );
 }

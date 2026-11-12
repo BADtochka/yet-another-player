@@ -1,4 +1,4 @@
-name: Windows build
+name: Desktop builds
 
 on:
   pull_request:
@@ -8,35 +8,60 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to publish (e.g. v0.0.3). Required for manual release uploads.'
+        description: 'Release tag to publish (e.g. v0.1.0). Run from that tag to publish; leave empty for build artifacts only.'
         required: false
         type: string
+      linux_only:
+        description: 'Build Linux packages only, including Arch (no release upload)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: windows-${{ github.workflow }}-${{ github.event.inputs.release_tag || github.ref }}
-  cancel-in-progress: true
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-windows:
-    name: Build Windows NSIS installer
+  release-info:
+    name: Resolve release version
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      release_tag: ${{ steps.release.outputs.tag }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Validate release tag
+        id: release
+        env:
+          MANUAL_TAG: ${{ inputs.release_tag }}
+          LINUX_ONLY: ${{ inputs.linux_only }}
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            push) tag="$GITHUB_REF_NAME" ;;
+            workflow_dispatch) tag="$MANUAL_TAG" ;;
+            *) tag="" ;;
+          esac
+          if [[ -z "$tag" ]]; then
+            exit 0
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ || "$GITHUB_REF" != "refs/tags/$tag" || "$LINUX_ONLY" == "true" ]]; then
+            echo "::error::Select the matching vX.Y.Z tag and enable all platforms to publish a release."
+            exit 1
+          fi
+          printf 'tag=%s\nversion=%s\n' "$tag" "${tag#v}" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    name: Build Windows NSIS installer
+    needs: release-info
+    if: ${{ !inputs.linux_only }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Resolve release tag
-        id: release
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
-            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,23 +105,21 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Set version from tag
-        if: steps.release.outputs.tag != ''
-        run: |
-          VERSION="${{ steps.release.outputs.tag }}"
-          VERSION="${VERSION#v}"
-          chmod +x ./scripts/set-version.sh
-          ./scripts/set-version.sh "$VERSION"
+        if: needs.release-info.outputs.tag != ''
+        env:
+          VERSION: ${{ needs.release-info.outputs.version }}
+        run: ./scripts/set-version.sh "$VERSION"
 
       - name: Build Windows NSIS installer
+        if: needs.release-info.outputs.tag == ''
+        run: bun run build:windows
+
+      - name: Build and sign Windows release installer
+        if: needs.release-info.outputs.tag != ''
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          if [[ -n "${{ steps.release.outputs.tag }}" ]]; then
-            bun run build:windows:release
-          else
-            bun run build:windows
-          fi
+        run: bun run build:windows:release
 
       - name: Upload NSIS bundle
         uses: actions/upload-artifact@v4
@@ -105,10 +128,191 @@ jobs:
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
           if-no-files-found: error
 
+  build-linux:
+    name: Build Linux x86_64 packages
+    needs: release-info
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: linux-jammy-x64
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf libfuse2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set version from tag
+        if: needs.release-info.outputs.tag != ''
+        env:
+          VERSION: ${{ needs.release-info.outputs.version }}
+        run: ./scripts/set-version.sh "$VERSION"
+
+      - name: Build Linux packages
+        if: needs.release-info.outputs.tag == ''
+        run: bun run build:linux
+
+      - name: Build and sign Linux release packages
+        if: needs.release-info.outputs.tag != ''
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun run build:linux:release
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-deb
+          path: src-tauri/target/release/bundle/deb/*.deb*
+          if-no-files-found: error
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage*
+          if-no-files-found: error
+
+  build-macos:
+    name: Build universal macOS DMG
+    needs: release-info
+    if: ${{ !inputs.linux_only }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: macos-universal
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set version from tag
+        if: needs.release-info.outputs.tag != ''
+        env:
+          VERSION: ${{ needs.release-info.outputs.version }}
+        run: ./scripts/set-version.sh "$VERSION"
+
+      - name: Build macOS bundles
+        if: needs.release-info.outputs.tag == ''
+        run: bun run build:macos
+
+      - name: Build macOS bundles and sign updater archive
+        if: needs.release-info.outputs.tag != ''
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun run build:macos:release
+
+      - name: Verify app and collect artifacts
+        env:
+          TAG: ${{ needs.release-info.outputs.tag }}
+        run: |
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          for app in "$bundle"/macos/*.app; do
+            architectures=" $(lipo -archs "$app/Contents/MacOS/yet-another-player") "
+            [[ "$architectures" == *" arm64 "* && "$architectures" == *" x86_64 "* ]]
+            codesign --verify --deep --strict "$app"
+          done
+          mkdir macos-artifacts
+          cp "$bundle"/dmg/*.dmg macos-artifacts/
+          if [[ -n "$TAG" ]]; then
+            cp "$bundle"/macos/*.app.tar.gz "$bundle"/macos/*.app.tar.gz.sig macos-artifacts/
+          fi
+
+      - name: Upload macOS bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal-bundle
+          path: macos-artifacts/
+          if-no-files-found: error
+
+  build-arch:
+    name: Build Arch Linux x86_64 package
+    needs: [release-info, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Linux application payload
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-deb
+          path: arch-input
+
+      - name: Build pacman package
+        env:
+          YAP_ARCH_VERSION: ${{ needs.release-info.outputs.version || '0.0.0' }}
+        run: |
+          cp arch-input/*_amd64.deb arch-input/yap.deb
+          mkdir arch-artifacts
+          docker run --rm --env YAP_ARCH_VERSION \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/source,readonly \
+            --mount type=bind,source="$GITHUB_WORKSPACE/arch-input",target=/input,readonly \
+            --mount type=bind,source="$GITHUB_WORKSPACE/arch-artifacts",target=/output \
+            archlinux:base-devel bash /source/packaging/arch/build-package.sh
+
+      - name: Setup Bun
+        if: needs.release-info.outputs.tag != ''
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        if: needs.release-info.outputs.tag != ''
+        run: bun install --frozen-lockfile
+
+      - name: Sign Arch updater package
+        if: needs.release-info.outputs.tag != ''
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun x tauri signer sign arch-artifacts/*.pkg.tar.zst
+
+      - name: Upload pacman package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-x86_64-pacman
+          path: arch-artifacts/
+          if-no-files-found: error
+
   publish-release:
-    name: Publish Windows release
-    needs: build-windows
-    if: needs.build-windows.outputs.release_tag != ''
+    name: Create desktop release draft
+    needs: [release-info, build-windows, build-linux, build-macos, build-arch]
+    if: needs.release-info.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,21 +327,45 @@ jobs:
           name: windows-nsis-bundle
           path: release-assets
 
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-x86_64-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download macOS bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-universal-bundle
+          path: release-assets
+
+      - name: Download Arch package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-x86_64-pacman
+          path: release-assets
+
       - name: Generate updater manifest
-        run: |
-          TAG="${{ needs.build-windows.outputs.release_tag }}"
-          VERSION="${TAG#v}"
-          node ./scripts/generate-latest-json.mjs release-assets "$VERSION" "$TAG"
+        env:
+          TAG: ${{ needs.release-info.outputs.tag }}
+          VERSION: ${{ needs.release-info.outputs.version }}
+        run: node ./scripts/generate-latest-json.mjs release-assets "$VERSION" "$TAG"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.build-windows.outputs.release_tag }}
-          name: yet-another-player ${{ needs.build-windows.outputs.release_tag }}
+          tag_name: ${{ needs.release-info.outputs.tag }}
+          name: yet-another-player ${{ needs.release-info.outputs.tag }}
           draft: true
           prerelease: false
           body: |
-            Download `yet-another-player_*_x64-setup.exe` for Windows.
+            - Windows x64: run the NSIS setup executable.
+            - macOS (Apple Silicon and Intel): open the universal DMG and drag YAP into Applications. If Gatekeeper blocks first launch, use Privacy & Security → Open Anyway.
+            - Debian/Ubuntu x86_64: install the `.deb` package.
+            - Other Linux x86_64 distributions: make the `.AppImage` executable and launch it.
+            - Arch Linux x86_64: install the `.pkg.tar.zst` with `sudo pacman -U ./<package>.pkg.tar.zst`.
 
-            Installed apps check GitHub Releases for updates automatically.
+            YAP checks GitHub Releases for updates and verifies downloads. On Arch, YAP downloads the verified package and shows the pacman command to install it.
           files: release-assets/*
+          fail_on_unmatched_files: true

@@ -1,69 +1,17 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { Button } from '@/components/Button';
 
-import { WindowClose } from '@/components/Icons/WindowClose';
-import { WindowMaximize } from '@/components/Icons/WindowMaximize';
-import { WindowMinimize } from '@/components/Icons/WindowMinimize';
-
-export const WindowBar = () => {
-  const appWindow = getCurrentWindow();
-  const onWindowToggleMaximize = () => {
-    void appWindow.toggleMaximize();
-  };
-
-  const onWindowControlsPointerDown = (event: PointerEvent) => {
-    event.stopPropagation();
-  };
-
-  const onWindowControlsDoubleClick = (event: MouseEvent) => {
-    event.stopPropagation();
-  };
-
-  const onWindowMinimize = () => {
-    void appWindow.minimize();
-  };
-
-  const onWindowClose = () => {
-    void appWindow.close();
-  };
+export function WindowBar() {
+  const window = getCurrentWindow();
 
   return (
-    <header
-      className='sticky w-full top-0 flex h-12 select-none items-center px-2 font-onest bg-[#061232] z-100'
-      data-tauri-drag-region
-    >
-      <div className='pointer-events-none absolute inset-0 flex items-center justify-center'>
-        <span className='text-base font-semibold text-white'>YAP</span>
-      </div>
-      <div
-        className='ml-auto flex items-center gap-2'
-        onPointerDown={onWindowControlsPointerDown}
-        onDblClick={onWindowControlsDoubleClick}
-      >
-        <button
-          type='button'
-          aria-label='Minimize'
-          className='flex flex-col items-center justify-center gap-2.5 rounded-[5px] border-0 bg-transparent size-9 hover:bg-[#030d28] cursor-pointer'
-          onClick={onWindowMinimize}
-        >
-          <WindowMinimize className='text-[#d9d9d9]' />
-        </button>
-        <button
-          type='button'
-          aria-label='Maximize'
-          className='flex flex-row items-center justify-center gap-2.5 rounded-[5px] border-0 bg-transparent size-9 hover:bg-[#030d28] cursor-pointer'
-          onClick={onWindowToggleMaximize}
-        >
-          <WindowMaximize className='text-[#d9d9d9]' />
-        </button>
-        <button
-          type='button'
-          aria-label='Close'
-          className='flex flex-row items-center justify-center gap-2.5 rounded-[5px] border-0 bg-transparent size-9 hover:bg-[#da3e3e] cursor-pointer'
-          onClick={onWindowClose}
-        >
-          <WindowClose className='text-[#d9d9d9]' />
-        </button>
+    <header className='app-window-bar' data-tauri-drag-region>
+      <span className='app-window-title'>YAP</span>
+      <div className='app-window-actions'>
+        <Button variant='ghost' size='icon' icon='Minus' aria-label='Свернуть окно' onClick={() => void window.minimize()} />
+        <Button variant='ghost' size='icon' icon='Square' aria-label='Изменить размер окна' onClick={() => void window.toggleMaximize()} />
+        <Button variant='ghost' size='icon' icon='X' className='app-window-close' aria-label='Закрыть окно' onClick={() => void window.close()} />
       </div>
     </header>
   );
-};
+}

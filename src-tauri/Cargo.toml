@@ -14,21 +14,64 @@ edition = "2021"
 name = "yet_another_player_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+audio-probe = []
+
+[[example]]
+name = "audio_probe"
+required-features = ["audio-probe"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-tiny_http = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-process = "2"
 tauri-plugin-zustand = "1"
-tauri-plugin-http = "2"
-tauri-plugin-shell = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "macos-system-configuration"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "sync", "time"] }
+sha2 = "0.10"
+tempfile = "3"
+zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tar = { version = "0.4", default-features = false }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+rodio = { version = "0.23", default-features = false, features = [
+  "playback", "mp3", "mp4", "vorbis", "symphonia-mkv", "flac", "wav"
+] }
+
+symphonia = { version = "0.5.5", default-features = false, features = ["ogg", "mkv"] }
+opus-decoder = "0.1.1"
+rtrb = "0.3"
+rand = "0.9"
+rusqlite = { version = "0.42", features = ["bundled"] }
+icu_collator = "=2.2.1"
+icu_locale_core = "2.2"
+lofty = "0.25"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "webp"] }
+walkdir = "2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+playwire = "2.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+windows = { version = "0.62.2", features = [
+  "Media", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_System_WinRT"
+] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

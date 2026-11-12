@@ -1,0 +1,17 @@
+pkgname=yet-another-player
+pkgver=${YAP_ARCH_VERSION//-/_}
+pkgrel=1
+pkgdesc='YAP desktop music player'
+arch=('x86_64')
+url='https://github.com/BADtochka/yet-another-player'
+license=('MIT')
+depends=('alsa-lib' 'gtk3' 'libayatana-appindicator' 'librsvg' 'webkit2gtk-4.1')
+options=('!strip' '!debug')
+
+package() {
+  bsdtar -xOf "$startdir/yap.deb" data.tar.gz | bsdtar -xf - -C "$pkgdir"
+  install -d "$pkgdir/usr/lib/$pkgname"
+  mv "$pkgdir/usr/bin/$pkgname" "$pkgdir/usr/lib/$pkgname/$pkgname"
+  ln -s "../lib/$pkgname/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

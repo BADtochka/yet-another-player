@@ -10,25 +10,34 @@ if (!assetsDir || !version || !tag) {
 
 const repo = process.env.GITHUB_REPOSITORY ?? 'BADtochka/yet-another-player';
 const files = readdirSync(assetsDir);
-const installer = files.find((file) => file.endsWith('-setup.exe'));
-const signatureFile = installer ? `${installer}.sig` : files.find((file) => file.endsWith('-setup.exe.sig'));
 
-if (!installer || !signatureFile || !files.includes(signatureFile)) {
-  console.error('Could not find NSIS installer and signature in', assetsDir, files);
-  process.exit(1);
+function platform(suffix) {
+  const installers = files.filter((file) => file.endsWith(suffix));
+  if (installers.length !== 1) {
+    throw new Error(`Expected exactly one ${suffix} installer in ${assetsDir}, found ${installers.length}`);
+  }
+  const [installer] = installers;
+  const signature = readFileSync(join(assetsDir, `${installer}.sig`), 'utf8').trim();
+  if (!signature) {
+    throw new Error(`Empty updater signature for ${installer}`);
+  }
+  return {
+    signature,
+    url: `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(installer)}`,
+  };
 }
 
-const signature = readFileSync(join(assetsDir, signatureFile), 'utf8').trim();
-const url = `https://github.com/${repo}/releases/download/${tag}/${installer}`;
-
+const macos = platform('.app.tar.gz');
 const manifest = {
   version,
   pub_date: new Date().toISOString(),
   platforms: {
-    'windows-x86_64': {
-      signature,
-      url,
-    },
+    'windows-x86_64': platform('-setup.exe'),
+    'linux-x86_64-appimage': platform('_amd64.AppImage'),
+    'linux-x86_64-deb': platform('_amd64.deb'),
+    'linux-x86_64-pacman': platform('-x86_64.pkg.tar.zst'),
+    'darwin-aarch64': macos,
+    'darwin-x86_64': macos,
   },
 };
 
