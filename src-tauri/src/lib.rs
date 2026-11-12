@@ -12,6 +12,7 @@ mod external_tools;
 mod genius;
 mod library;
 mod linux_audio;
+mod lyrica;
 
 pub struct MusicFolders {
     canonical: Arc<Mutex<Vec<PathBuf>>>,
@@ -176,6 +177,7 @@ pub fn run() {
             get_audio_environment,
             get_cover,
             get_lyrics,
+            lyrica::lookup_lyrica_lyrics,
             genius::genius_is_configured,
             genius::genius_save_token,
             genius::genius_disconnect,

@@ -4,14 +4,23 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
 import { MediaDetails } from '@/components/MediaDetails';
+import { Select, type SelectOption } from '@/components/Select/Select';
 import type { Track } from '@/types/Track';
 import { tracksByPaths } from '@/hooks/useLibrary';
 import { usePlayerStore } from '@/stores';
 import { geniusError, geniusIsConfigured, geniusSearch, type GeniusSong } from '@/utils/genius';
+import { lookupLyricaLyrics, lyricaError, lyricaProviders, type LyricaLyrics, type LyricaProvider } from '@/utils/lyrica';
 
 export const Route = createFileRoute('/lyrics')({ component: Lyrics });
 
+type Source = 'local' | 'geniusPage' | LyricaProvider;
 type Line = { time: number; content: string };
+
+const sources: readonly SelectOption<Source>[] = [
+  { value: 'local', label: 'Локальный текст' },
+  ...lyricaProviders,
+  { value: 'geniusPage', label: 'Genius · открыть страницу' },
+];
 
 function parseLrc(text: string) {
   const offset = Number(text.match(/^\[offset:\s*([+-]?\d+)\]/im)?.[1] ?? 0) / 1000;
@@ -111,7 +120,7 @@ function LyricsReader({ path, text, lines }: { path: string; text: string; lines
   );
 }
 
-function LocalLyrics({ track }: { track: Track }) {
+function LocalLyrics({ track, onSearch }: { track: Track; onSearch: () => void }) {
   const [local, setLocal] = useState<string | null>();
   useEffect(() => {
     let active = true;
@@ -124,13 +133,63 @@ function LocalLyrics({ track }: { track: Track }) {
   const lines = useMemo(() => parseLrc(text), [text]);
   if (text.trim()) return <LyricsReader path={track.path} text={text} lines={lines} />;
   if (local === undefined) return <div className='lyrics-status' role='status'>Читаем локальный текст…</div>;
-  return <GeniusLookup track={track} />;
+  return (
+    <div className='lyrics-status'>
+      <p>Для этого трека нет локального текста.</p>
+      <Button size='small' icon='Search' onClick={onSearch}>Выбрать Lyrica</Button>
+    </div>
+  );
+}
+
+function LyricaLookup({ track, provider }: { track: Track; provider: LyricaProvider }) {
+  const [state, setState] = useState<
+    { kind: 'idle' | 'loading' | 'missing' }
+    | { kind: 'error'; message: string }
+    | { kind: 'found'; lyrics: LyricaLyrics }
+  >({ kind: 'idle' });
+  const lyrics = state.kind === 'found' ? state.lyrics : undefined;
+  const lines = useMemo(() => lyrics?.lines.map((line) => ({ time: line.startMs / 1000, content: line.text })) ?? [], [lyrics]);
+  const artist = track.artists.join(', ');
+
+  async function search() {
+    if (state.kind === 'loading') return;
+    setState({ kind: 'loading' });
+    try {
+      const lyrics = await lookupLyricaLyrics(track.name, artist, provider);
+      setState(lyrics ? { kind: 'found', lyrics } : { kind: 'missing' });
+    } catch (reason) {
+      setState({ kind: 'error', message: lyricaError(reason) });
+    }
+  }
+
+  if (lyrics) {
+    const name = lyricaProviders.find((option) => option.value === lyrics.provider)?.label;
+    return (
+      <div className='lyrics-result'>
+        <p className='lyrics-credit' role='status'>{name ? `Источник: ${name}` : 'Источник: Lyrica'}</p>
+        {lyrics.instrumental && !lines.length && !lyrics.text.trim()
+          ? <div className='lyrics-status'>Инструментальный трек</div>
+          : <LyricsReader path={track.path} text={lyrics.text} lines={lines} />}
+      </div>
+    );
+  }
+  return (
+    <div className='lyrics-status'>
+      {state.kind === 'idle' && <p>{artist.trim() ? 'Для поиска Lyrica получит название трека и исполнителя.' : 'Укажите исполнителя в метаданных трека, чтобы найти текст.'}</p>}
+      {state.kind === 'loading' && <p role='status'>Ищем текст…</p>}
+      {state.kind === 'missing' && <p role='status'>Текст не найден. Можно попробовать другой источник.</p>}
+      {state.kind === 'error' && <p className='kit-error' role='alert'>{state.message}</p>}
+      <Button size='small' icon='Search' disabled={state.kind === 'loading' || !artist.trim()}
+        onClick={() => void search()}>{state.kind === 'missing' || state.kind === 'error' ? 'Повторить поиск' : 'Найти текст'}</Button>
+    </div>
+  );
 }
 
 function Lyrics() {
   const track = usePlayerStore((state) => state.currentTrack);
   const nextPath = usePlayerStore((state) => state.nextTrackPath);
   const [nextTrack, setNextTrack] = useState<Track>();
+  const [source, setSource] = useState<Source>('local');
   const path = track?.path;
 
   useEffect(() => {
@@ -151,7 +210,13 @@ function Lyrics() {
         ]}
         next={next && { name: next.name, subtitle: next.artists.join(', '), icon: 'Track', path: next.path }} />
       <div className='lyrics-panel'>
-        <LocalLyrics key={track.path} track={track} />
+        <div className='lyrics-toolbar'>
+          <label htmlFor='lyrics-source'>Источник текста</label>
+          <Select id='lyrics-source' label='Источник текста' value={source} options={sources} onChange={setSource} />
+        </div>
+        {source === 'local' ? <LocalLyrics key={track.path} track={track} onSearch={() => setSource('auto')} />
+          : source === 'geniusPage' ? <GeniusLookup key={track.path} track={track} />
+            : <LyricaLookup key={`${source}:${track.path}`} track={track} provider={source} />}
       </div>
     </section>
   );
