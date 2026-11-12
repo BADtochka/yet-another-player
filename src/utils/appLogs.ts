@@ -1,5 +1,5 @@
-import { appConfigDir, join } from '@tauri-apps/api/path';
-import { mkdir, open } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
+import { appConfigDir } from '@tauri-apps/api/path';
 import { openPath } from '@tauri-apps/plugin-opener';
 import { toast } from '@/utils/toast';
 
@@ -25,30 +25,11 @@ const serializeDetails = (details: unknown) => {
 
 export const getConfigFolderPath = () => appConfigDir();
 
-const getLogFilePath = async () => {
-  const configDir = await getConfigFolderPath();
-  const logsDir = await join(configDir, 'logs');
-
-  await mkdir(logsDir, { recursive: true });
-
-  return join(logsDir, 'yap.log');
-};
-
 export const writeAppLog = async (level: LogLevel, message: string, details?: unknown) => {
-  const logFile = await getLogFilePath();
   const timestamp = new Date().toISOString();
   const detailsText = details === undefined ? '' : ` ${serializeDetails(details)}`;
-  const line = `[${timestamp}] [${level.toUpperCase()}] ${message}${detailsText}\n`;
-  const file = await open(logFile, {
-    append: true,
-    create: true,
-  });
-
-  try {
-    await file.write(new TextEncoder().encode(line));
-  } finally {
-    await file.close();
-  }
+  const line = `[${timestamp}] [${level.toUpperCase()}] ${message}${detailsText}`;
+  await invoke('append_app_log', { line: `${line.slice(0, 32_000)}\n` });
 };
 
 export const logInfo = (message: string, details?: unknown) => {

@@ -1,83 +1,25 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useRef } from 'preact/hooks';
+import { MediaCard } from '@/components/MediaCard';
 import { usePlayerStore } from '@/stores';
 import { useIntersection } from '@/hooks/useIntersection';
+import { useTrackCover } from '@/hooks/useTrackCover';
 import { type Track as TrackType } from '@/types/Track';
-import { getCoverSrc } from '@/utils/audioServer';
+import { formatPlaybackTime } from '@/utils/formatPlaybackTime';
 
-const FALLBACK_COVER = '/temp_cover.png';
-
-type TrackProps = {
+export function Track({ track, onPlay, disabled }: {
   track: TrackType;
-};
-
-export const Track = ({ track }: TrackProps) => {
-  const setCurrentTrack = usePlayerStore((state) => state.setCurrentTrack);
-  const setCurrentTime = usePlayerStore((state) => state.setCurrentTime);
-  const setPlaying = usePlayerStore((state) => state.setPlaying);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const isVisible = useIntersection(rootRef, '300px');
-  const [coverSrc, setCoverSrc] = useState(FALLBACK_COVER);
-  const { name, artists, album, year, path } = track;
-  const artistLabel = artists.length > 0 ? artists.join(', ') : 'Unknown artist';
-  const metadata = [album, year].filter(Boolean).join(' · ');
-
-  useEffect(() => {
-    if (!isVisible) {
-      return;
-    }
-
-    let cancelled = false;
-
-    void getCoverSrc(path)
-      .then((src) => {
-        if (!cancelled) {
-          setCoverSrc(src);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCoverSrc(FALLBACK_COVER);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isVisible, path]);
-
-  const onTrackClicked = () => {
-    requestAnimationFrame(() => {
-      setCurrentTrack(track);
-      setCurrentTime(0);
-      setPlaying(true);
-    });
-  };
+  onPlay: (track: TrackType) => void;
+  disabled?: boolean;
+}) {
+  const selected = usePlayerStore((state) => state.currentTrackPath === track.path);
+  const ref = useRef<HTMLButtonElement>(null);
+  const visible = useIntersection(ref, '300px');
+  const { coverSrc, clearCover } = useTrackCover(visible ? track.path : undefined);
 
   return (
-    <div
-      ref={rootRef}
-      className='flex flex-col gap-2 rounded-2xl border border-[#101C3A] bg-[#061232] p-3 cursor-pointer'
-      onPointerDown={onTrackClicked}
-    >
-      <img
-        src={coverSrc}
-        alt=''
-        decoding='async'
-        loading='lazy'
-        className='aspect-square w-full rounded-lg object-cover'
-        onError={(event) => {
-          const image = event.currentTarget;
-
-          if (!image.src.includes('temp_cover.png')) {
-            image.src = FALLBACK_COVER;
-          }
-        }}
-      />
-      <div className='flex flex-col gap-1'>
-        <p className='line-clamp-1 text-ellipsis font-semibold'>{name}</p>
-        <p className='line-clamp-1 overflow-hidden text-ellipsis wrap-break-word'>{artistLabel}</p>
-        {metadata && <p className='line-clamp-1 text-ellipsis text-sm text-white/60'>{metadata}</p>}
-      </div>
-    </div>
+    <MediaCard buttonRef={ref} title={track.name} subtitle={track.artists.join(', ') || 'Неизвестный исполнитель'}
+      metadata={track.duration && track.duration > 0 && Number.isFinite(track.duration) ? formatPlaybackTime(track.duration) : undefined}
+      icon='Track' coverSrc={coverSrc} onCoverError={clearCover} aria-current={selected ? 'true' : undefined}
+      disabled={disabled} onClick={() => onPlay(track)} />
   );
-};
+}

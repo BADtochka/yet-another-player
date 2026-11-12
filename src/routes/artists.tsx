@@ -1,9 +1,16 @@
 import { createFileRoute } from '@tanstack/react-router';
-
-const Artists = () => {
-  return <h1>Исполнители</h1>;
-};
+import { CatalogCollectionPage } from '@/components/Collections';
 
 export const Route = createFileRoute('/artists')({
-  component: Artists,
+  validateSearch: (search: Record<string, unknown>) => ({
+    collection: typeof search.collection === 'string' ? search.collection : undefined,
+  }),
+  component: CollectionPage,
 });
+
+function CollectionPage() {
+  const { collection } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  return <CatalogCollectionPage kind='artist' id={collection}
+    open={(id) => void navigate({ search: { collection: id } })} />;
+}

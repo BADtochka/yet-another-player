@@ -1,4 +1,6 @@
+#[cfg(target_os = "linux")]
 use std::env;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use serde::Serialize;
@@ -30,7 +32,9 @@ pub fn configure() -> AudioEnvironment {
             pulse_latency_ms: None,
             web_audio_recommended: false,
             web_audio_disabled_by_env: false,
-            notes: vec!["Volume normalization uses ReplayGain tags and native audio output.".into()],
+            notes: vec![
+                "Volume normalization uses ReplayGain tags and native audio output.".into(),
+            ],
         }
     }
 }
@@ -55,7 +59,7 @@ fn configure_linux() -> AudioEnvironment {
         notes.push("PulseAudio is unavailable in WSL.".into());
     }
 
-    notes.push("Volume normalization uses ReplayGain tags and native audio.volume.".into());
+    notes.push("Volume normalization uses ReplayGain tags and native audio output.".into());
 
     AudioEnvironment {
         platform: "linux".to_string(),
@@ -104,10 +108,15 @@ fn configure_pulse(is_wsl: bool, notes: &mut Vec<String>) {
     if env::var("PULSE_LATENCY_MSEC").is_err() {
         let latency = if is_wsl { "150" } else { "80" };
         env::set_var("PULSE_LATENCY_MSEC", latency);
-        notes.push(format!("Set PULSE_LATENCY_MSEC={latency} for larger playback buffers."));
+        notes.push(format!(
+            "Set PULSE_LATENCY_MSEC={latency} for larger playback buffers."
+        ));
     }
 
-    env::set_var("PULSE_PROP", "media.role=music application.name=yet-another-player");
+    env::set_var(
+        "PULSE_PROP",
+        "media.role=music application.name=yet-another-player",
+    );
 }
 
 #[cfg(target_os = "linux")]

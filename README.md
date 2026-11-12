@@ -1,10 +1,15 @@
-# Tauri + Preact + Typescript
+# YAP — Yet Another Player
 
-This template should help get you started developing with Tauri, Preact and Typescript in Vite.
+A desktop player for local music, built with Tauri, Rust, and Preact. Choose your music folders on first launch. YAP indexes file tags in a local SQLite catalog and plays audio through a native Rust engine. Install yt-dlp from Settings to search YouTube Music and download tracks; FFmpeg is optional for MP3 conversion.
 
-## Recommended IDE Setup
+## Development
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+```sh
+bun install --frozen-lockfile
+bun run tauri dev
+```
+
+Run `bun run build` to type-check and bundle the frontend and `cargo test --locked --manifest-path src-tauri/Cargo.toml` to test the native code. See [the refactor plan](REFACTOR_PLAN.md) for the architecture and design reference.
 
 ## Windows Build From WSL
 
@@ -38,8 +43,6 @@ bun run build:windows:release
 
 This also produces `.sig` files next to the installer for GitHub Releases auto-update.
 
-By default the app scans the system audio directory, for example `%USERPROFILE%\Music` on Windows.
-
 ## Auto-update (GitHub Releases)
 
 The app uses [Tauri updater](https://v2.tauri.app/plugin/updater/) and checks for updates on startup in production builds.
@@ -65,11 +68,11 @@ The `Windows build` workflow compiles the NSIS installer on tags, uploads `lates
 
 - on WSLg (Windows 11) it uses `PULSE_SERVER=unix:/mnt/wslg/PulseServer`
 - PipeWire GStreamer plugins are disabled because they often break WebKit playback in WSL
-- `PULSE_LATENCY_MSEC=150` increases the PulseAudio buffer to reduce Web Audio underruns
+- `PULSE_LATENCY_MSEC=150` increases the PulseAudio buffer
 - otherwise it falls back to a null ALSA device to avoid PipeWire/ALSA startup errors
 
 If you still need real audio in WSL, run a PulseAudio server on Windows and expose it on port `4713`.
 
-Check **Settings → Diagnostics → Audio environment** to verify PulseAudio routing and whether Web Audio compression is enabled.
+Check **Settings → Diagnostics** for the active audio environment and WSL routing.
 
 WSL always uses native playback. Volume normalization uses ReplayGain tags from MP3 files on all platforms.

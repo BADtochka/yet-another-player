@@ -1,27 +1,28 @@
 import { cn } from 'badlib';
 import type { JSX } from 'preact';
 import { forwardRef } from 'preact/compat';
-import { Search } from '@/components/Icons/Search';
+import { Icon, type IconName } from '@/components/Icons/Icon';
 
-type InputProps = Omit<JSX.InputHTMLAttributes<HTMLInputElement>, 'size'>;
+type InputProps = Omit<JSX.InputHTMLAttributes<HTMLInputElement>, 'size'> & {
+  icon?: IconName;
+  submit?: boolean;
+  onClear?: () => void;
+};
 
-export const Input = forwardRef<HTMLInputElement, InputProps>(({ className, placeholder, ...props }, ref) => {
-  return (
-    <label
-      className={cn(
-        'flex min-h-12 w-full items-center justify-between gap-2.5 rounded-lg border border-transparent bg-[#020a1d] p-2.5 text-[#516ba9] transition-colors duration-150 focus-within:border-[#405ea4] focus-within:bg-[#061232] focus-within:text-white',
-        className,
-      )}
-    >
-      <input
-        ref={ref}
-        placeholder={placeholder}
-        className='min-w-0 grow border-0 bg-transparent p-0 font-onest text-base/none font-medium text-inherit outline-none placeholder:text-[#516ba9]'
-        {...props}
-      />
-      <Search size={20} className='shrink-0 text-current' aria-hidden='true' />
-    </label>
-  );
-});
+export const Input = forwardRef<HTMLInputElement, InputProps>(({
+  className, icon, submit, onClear, ...props
+}, ref) => (
+  <div className={cn('kit-input', className)} data-invalid={props['aria-invalid'] === true || props['aria-invalid'] === 'true'}>
+    <input ref={ref} {...props} />
+    {onClear && props.value && (
+      <button type='button' className='kit-input-clear' aria-label='Очистить поиск' onClick={onClear}>
+        <Icon name='X' size={16} />
+      </button>
+    )}
+    {submit ? (
+      <button type='submit' aria-label='Найти' disabled={props.disabled}><Icon name='Search' size={20} /></button>
+    ) : icon && <Icon name={icon} size={20} />}
+  </div>
+));
 
 Input.displayName = 'Input';

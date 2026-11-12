@@ -1,21 +1,17 @@
-import { Folder } from '@/components/Icons/Folder';
-import { SettingsTextAction } from '@/components/Settings/SettingsTextAction';
+import { Button } from '@/components/Button';
+import { Icon } from '@/components/Icons/Icon';
 
-type MediaFolderRowProps = {
+export function MediaFolderRow({ path, onRemove, disabled }: {
   path: string;
   onRemove: () => void;
-};
-
-export const MediaFolderRow = ({ path, onRemove }: MediaFolderRowProps) => {
+  disabled: boolean;
+}) {
   return (
-    <div className='flex items-center gap-2.5 self-stretch p-2.5'>
-      <Folder size={24} className='shrink-0 text-[#506ba9]' aria-hidden />
-      <p className='min-w-0 truncate text-base font-medium text-[#d9d9d9]' title={path}>
-        {path}
-      </p>
-      <SettingsTextAction onClick={onRemove} className='ml-auto'>
-        Удалить
-      </SettingsTextAction>
+    <div className='settings-folder'>
+      <Icon name='Folder' size={32} />
+      <p title={path}>{path}</p>
+      <Button size='icon' className='settings-folder-remove' icon='Trash' disabled={disabled}
+        aria-label={`Удалить папку ${path}`} onClick={onRemove} />
     </div>
   );
-};
+}

@@ -1,6 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { createRootRoute, Outlet, useLocation, useNavigate } from '@tanstack/react-router';
-import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 
 import { useEffect, useState } from 'preact/hooks';
 import { AppToaster } from '@/components/AppToaster';
@@ -8,6 +7,7 @@ import { FlexLogo } from '@/components/FlexLogo';
 import { NavBar } from '@/components/NavBar';
 import { PlayerControls } from '@/components/PlayerControls';
 import { WindowBar } from '@/components/WindowBar';
+import { YtDlpGatekeeperDialog } from '@/components/YtDlpFeedback';
 import { savePlayerStateOnExit } from '@/stores/playerStore';
 import { installGlobalLogHandlers } from '@/utils/appLogs';
 import { checkForAppUpdates } from '@/utils/checkForUpdates';
@@ -20,6 +20,8 @@ const RootLayout = () => {
   const [storeLoaded, setStoreLoaded] = useState(false);
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const isSetup = pathname === '/setup';
+  const hasToolbar = !isSetup && pathname !== '/settings';
 
   const warmApp = async () => {
     const { hasMusicFolders } = await prepareStore();
@@ -47,11 +49,13 @@ const RootLayout = () => {
 
         try {
           await savePlayerStateOnExit();
-          await getCurrentWindow().close();
         } catch (error) {
-          closingAfterSave = false;
           console.error('Failed to save player state on exit', error);
         }
+        await getCurrentWindow().close().catch((error) => {
+          closingAfterSave = false;
+          console.error('Failed to close window', error);
+        });
       })
       .then((unlisten) => {
         unlistenClose = unlisten;
@@ -74,16 +78,16 @@ const RootLayout = () => {
 
   return (
     <>
-      <div className='flex h-screen flex-col overflow-hidden gap-4'>
+      <div className='app-shell' data-setup={isSetup} data-toolbar={hasToolbar}>
         <WindowBar />
-        <NavBar />
-        <div className='flex min-h-0 flex-1 overflow-hidden pl-4 [&>div]:overflow-auto [&>div]:pr-6'>
+        {!isSetup && <NavBar />}
+        <main className='app-content'>
           {storeLoaded ? <Outlet /> : <FlexLogo />}
-        </div>
+        </main>
         <PlayerControls />
       </div>
-      <TanStackRouterDevtools />
       <AppToaster />
+      <YtDlpGatekeeperDialog />
     </>
   );
 };

@@ -12,7 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TracksRouteImport } from './routes/tracks'
 import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SearchRouteImport } from './routes/search'
 import { Route as PlaylistsRouteImport } from './routes/playlists'
+import { Route as LyricsRouteImport } from './routes/lyrics'
 import { Route as ArtistsRouteImport } from './routes/artists'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -31,9 +33,19 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SearchRoute = SearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PlaylistsRoute = PlaylistsRouteImport.update({
   id: '/playlists',
   path: '/playlists',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LyricsRoute = LyricsRouteImport.update({
+  id: '/lyrics',
+  path: '/lyrics',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ArtistsRoute = ArtistsRouteImport.update({
@@ -50,7 +62,9 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/artists': typeof ArtistsRoute
+  '/lyrics': typeof LyricsRoute
   '/playlists': typeof PlaylistsRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
   '/tracks': typeof TracksRoute
@@ -58,7 +72,9 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/artists': typeof ArtistsRoute
+  '/lyrics': typeof LyricsRoute
   '/playlists': typeof PlaylistsRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
   '/tracks': typeof TracksRoute
@@ -67,7 +83,9 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/artists': typeof ArtistsRoute
+  '/lyrics': typeof LyricsRoute
   '/playlists': typeof PlaylistsRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/setup': typeof SetupRoute
   '/tracks': typeof TracksRoute
@@ -75,14 +93,31 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/artists' | '/playlists' | '/settings' | '/setup' | '/tracks'
+    | '/'
+    | '/artists'
+    | '/lyrics'
+    | '/playlists'
+    | '/search'
+    | '/settings'
+    | '/setup'
+    | '/tracks'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/artists' | '/playlists' | '/settings' | '/setup' | '/tracks'
+  to:
+    | '/'
+    | '/artists'
+    | '/lyrics'
+    | '/playlists'
+    | '/search'
+    | '/settings'
+    | '/setup'
+    | '/tracks'
   id:
     | '__root__'
     | '/'
     | '/artists'
+    | '/lyrics'
     | '/playlists'
+    | '/search'
     | '/settings'
     | '/setup'
     | '/tracks'
@@ -91,7 +126,9 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ArtistsRoute: typeof ArtistsRoute
+  LyricsRoute: typeof LyricsRoute
   PlaylistsRoute: typeof PlaylistsRoute
+  SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
   SetupRoute: typeof SetupRoute
   TracksRoute: typeof TracksRoute
@@ -120,11 +157,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/search': {
+      id: '/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof SearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/playlists': {
       id: '/playlists'
       path: '/playlists'
       fullPath: '/playlists'
       preLoaderRoute: typeof PlaylistsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/lyrics': {
+      id: '/lyrics'
+      path: '/lyrics'
+      fullPath: '/lyrics'
+      preLoaderRoute: typeof LyricsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/artists': {
@@ -147,7 +198,9 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArtistsRoute: ArtistsRoute,
+  LyricsRoute: LyricsRoute,
   PlaylistsRoute: PlaylistsRoute,
+  SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,
   SetupRoute: SetupRoute,
   TracksRoute: TracksRoute,

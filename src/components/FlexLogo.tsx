@@ -1,7 +1,5 @@
-export const FlexLogo = () => {
-  return (
-    <div className='absolute inset-0 flex justify-center items-center'>
-      <img src='logo.svg' className='animate-flex' />
-    </div>
-  );
-};
+export function FlexLogo() {
+  return <div className='app-loading' role='status' aria-label='Открываем медиатеку'>
+    <img src='/logo.svg' alt='' />
+  </div>;
+}

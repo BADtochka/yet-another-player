@@ -1,21 +1,21 @@
-import { cn } from 'badlib';
-import { ComponentChildren } from 'preact';
+import type { ComponentChildren } from 'preact';
 
-type SettingsSectionProps = {
+export function SettingsSection({ title, description, actions, children }: {
   title: string;
   description?: string;
-  children?: ComponentChildren;
-  className?: string;
-};
-
-export const SettingsSection = ({ title, description, children, className }: SettingsSectionProps) => {
+  actions?: ComponentChildren;
+  children: ComponentChildren;
+}) {
   return (
-    <section className={cn('flex flex-col gap-5 rounded-[5px] justify-start', className)}>
-      <div className='flex flex-col'>
-        <h2 className='text-[32px] font-medium leading-none text-[#d9d9d9]'>{title}</h2>
-        {description && <p className='text-base font-medium text-[#d9d9d9]'>{description}</p>}
-      </div>
+    <section className='settings-section'>
+      <header>
+        <div>
+          <h2>{title}</h2>
+          {description && <p>{description}</p>}
+        </div>
+        {actions && <div className='settings-header-actions'>{actions}</div>}
+      </header>
       {children}
     </section>
   );
-};
+}

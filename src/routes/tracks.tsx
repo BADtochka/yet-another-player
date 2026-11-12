@@ -1,58 +1,42 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
+import { Button } from '@/components/Button';
 import { Track } from '@/components/Track';
-import { useMusicStore } from '@/stores';
-
-const TRACKS_PAGE_SIZE = 48;
+import { useTrackPages } from '@/hooks/useLibrary';
+import { playTrackQuery } from '@/stores/playerStore';
+import { useTrackViewStore } from '@/stores/trackViewStore';
 
 const Tracks = () => {
-  const tracks = useMusicStore((state) => state.tracks);
-  const [visibleCount, setVisibleCount] = useState(TRACKS_PAGE_SIZE);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const { layout, sort: preference } = useTrackViewStore();
+  const sort = preference === 'releaseYear' || preference === 'created' ? 'name' : preference;
+  const query = { sort, text: '' };
+  const { tracks, loading, error, hasMore, loadMore, retry } = useTrackPages(query);
+  const sentinel = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setVisibleCount(TRACKS_PAGE_SIZE);
-  }, [tracks.length]);
+    const target = sentinel.current;
+    if (!target || error) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) loadMore();
+    }, { rootMargin: '600px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [tracks, hasMore, error, sort]);
 
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-
-    if (!sentinel || visibleCount >= tracks.length) {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) {
-          setVisibleCount((current) => Math.min(current + TRACKS_PAGE_SIZE, tracks.length));
-        }
-      },
-      { rootMargin: '600px' },
-    );
-
-    observer.observe(sentinel);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [tracks.length, visibleCount]);
-
-  if (tracks.length === 0) {
-    return <p className='p-4 text-white'>MP3 файлы не найдены.</p>;
-  }
-
-  const visibleTracks = tracks.slice(0, visibleCount);
+  if (loading) return <p className='kit-message' role='status'>Загружаем треки…</p>;
+  if (!tracks.length && !error) return <p className='kit-message'>В медиатеке пока нет треков.</p>;
 
   return (
-    <div className='grid min-h-0 w-full content-start grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3'>
-      {visibleTracks.map((track) => (
-        <Track key={track.path} track={track} />
+    <div className='track-collection' data-layout={layout}>
+      {tracks.map((track) => (
+        <Track key={track.id} track={track} onPlay={() => playTrackQuery(query, { type: 'id', id: track.id })} />
       ))}
-      {visibleCount < tracks.length && <div ref={sentinelRef} className='col-span-full h-8' aria-hidden='true' />}
+      {error && <div className='col-span-full flex flex-wrap items-center gap-2' role='alert'>
+        <span className='kit-error'>{error}</span><Button size='small' onClick={retry}>Повторить</Button>
+      </div>}
+      {hasMore && <div ref={sentinel} className='col-span-full h-8' aria-hidden='true' />}
     </div>
   );
 };
 
-export const Route = createFileRoute('/tracks')({
-  component: Tracks,
-});
+export const Route = createFileRoute('/tracks')({ component: Tracks });

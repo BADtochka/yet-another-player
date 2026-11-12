@@ -1,3 +1,4 @@
+import { SettingsSection } from '@/components/Settings/SettingsSection';
 import { DiagnosticsSettings } from '@/components/Settings/DiagnosticsSettings';
 import { ExternalToolsSettings } from '@/components/Settings/ExternalToolsSettings';
 import { MediaFoldersSettings } from '@/components/Settings/MediaFoldersSettings';
@@ -18,37 +19,25 @@ function RouteComponent() {
   const setVolumeNormLevel = useSettingsStore((state) => state.setVolumeNormLevel);
 
   return (
-    <div className='mx-auto flex w-full max-w-[952px] flex-col gap-5'>
+    <div className='settings-page'>
       <MediaFoldersSettings />
       <ExternalToolsSettings />
-      <DiagnosticsSettings />
-      <UpdateSettings />
-      <SwitchSettings
-        label='Установить одну громкость для всех треков'
-        checked={volumeNormEnabled}
-        onChange={setVolumeNormEnabled}
-      >
-        <SelectSettings
-          label='Установи желаемый уровень громкости в зависимости
-          от окружающей обстановки'
-          options={[
-            {
-              label: 'Тихо',
-              value: 'quiet',
-            },
-            {
-              label: 'Нормально',
-              value: 'normal',
-            },
-            {
-              label: 'Громко',
-              value: 'loud',
-            },
-          ]}
-          value={volumeNormLevel}
-          onChange={setVolumeNormLevel}
-        />
-      </SwitchSettings>
+      <SettingsSection title='Прочее' description='Версия, конфигурация и логи'>
+        <div className='settings-rows'>
+          <UpdateSettings />
+          <DiagnosticsSettings />
+        </div>
+      </SettingsSection>
+      <SettingsSection title='Воспроизведение'>
+        <SwitchSettings label='Установить одну громкость для всех треков'
+          checked={volumeNormEnabled} onChange={setVolumeNormEnabled}>
+          <SelectSettings label='Уровень громкости' options={[
+            { label: 'Тихо', value: 'quiet' },
+            { label: 'Нормально', value: 'normal' },
+            { label: 'Громко', value: 'loud' },
+          ]} value={volumeNormLevel} onChange={setVolumeNormLevel} />
+        </SwitchSettings>
+      </SettingsSection>
     </div>
   );
 }
