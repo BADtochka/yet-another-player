@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "icon": ["icons/linux.png"],
+    "shortDescription": "YAP music player",
+    "linux": {
+      "deb": {
+        "depends": ["libasound2t64 | libasound2"]
+      }
+    }
+  }
+}

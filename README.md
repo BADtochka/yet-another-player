@@ -11,6 +11,20 @@ bun run tauri dev
 
 Run `bun run build` to type-check and bundle the frontend and `cargo test --locked --manifest-path src-tauri/Cargo.toml` to test the native code. See [the refactor plan](REFACTOR_PLAN.md) for the architecture and design reference.
 
+## Linux builds
+
+On Ubuntu 22.04 x86_64, install the Linux build dependencies and build both packages:
+
+```sh
+sudo apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf libfuse2
+bun install --frozen-lockfile
+bun run build:linux
+```
+
+The `.deb` and `.AppImage` are written to `src-tauri/target/release/bundle/{deb,appimage}/`. On Debian or Ubuntu, install the `.deb` with `sudo apt install ./<package>.deb`. Make the AppImage executable before launching it.
+
+The **Desktop builds** workflow also uploads both packages as Actions artifacts. For a manual build without a release, leave **Release tag** empty. Select **Build only Linux** to skip Windows.
+
 ## Windows Build From WSL
 
 Install Bun and Rust in WSL, then prepare the Windows cross-compile toolchain:
@@ -58,9 +72,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Or run **Windows build** manually in Actions, set **release tag** to `v0.1.0`, and pick the tag ref to build from.
+Or run **Desktop builds** manually in Actions, select the tag ref and enter the same value under **Release tag**.
 
-The `Windows build` workflow compiles the NSIS installer on tags, uploads `latest.json` and signatures, and creates a draft GitHub Release.
+The workflow creates one draft GitHub Release after both platforms build. It includes the Windows NSIS installer, Linux x86_64 Debian package and AppImage, their updater signatures, and a shared `latest.json`. The **Desktop checks** workflow runs tests on a macOS runner as well; the release workflow currently packages Windows and Linux.
 
 ## WSL Dev Audio
 
