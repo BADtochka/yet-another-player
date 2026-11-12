@@ -20,6 +20,14 @@ pub struct MusicFolders {
     configured: Mutex<Vec<String>>,
 }
 
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic")
+}
+
 #[tauri::command]
 async fn append_app_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
     if line.len() > 128 * 1024 {

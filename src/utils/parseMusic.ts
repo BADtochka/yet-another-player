@@ -1,6 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { invalidateCatalog } from '@/hooks/useLibrary';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { logError, logWarn } from '@/utils/appLogs';
 import { registerMusicRoots } from '@/utils/musicFolders';
 
 export type TrackScanProgress = {
@@ -17,6 +18,7 @@ type ScanResult = {
   cancelled: boolean;
   unavailableFolders: number;
   catalog: Catalog;
+  readWarnings: { count: number; example: string | null };
 };
 
 type ScanOptions = {
@@ -42,6 +44,9 @@ export const parseMusic = async ({ id = createScanId(), folders, onProgress }: S
     progress.onmessage = (message) => onProgress?.(message);
     const result = await invoke<ScanResult>('library_scan', { id, progress });
 
+    if (result.readWarnings.count > 0) {
+      logWarn('Audio read warnings during library scan', result.readWarnings);
+    }
     if (result.cancelled) {
       await registerMusicRoots(registeredFolders);
     } else {
@@ -49,6 +54,7 @@ export const parseMusic = async ({ id = createScanId(), folders, onProgress }: S
     }
     return result;
   } catch (error) {
+    logError('Library scan failed', error);
     await registerMusicRoots(registeredFolders).catch(() => undefined);
     throw error;
   } finally {

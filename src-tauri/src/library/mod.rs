@@ -5,6 +5,7 @@ pub(crate) mod youtube;
 use std::{
     collections::HashSet,
     fs,
+    panic::catch_unwind,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -85,6 +86,23 @@ pub struct ScanResult {
     cancelled: bool,
     unavailable_folders: usize,
     catalog: CatalogStatus,
+    read_warnings: ReadWarnings,
+}
+
+#[derive(Default, Serialize)]
+struct ReadWarnings {
+    count: usize,
+    example: Option<String>,
+}
+
+impl ReadWarnings {
+    fn record(&mut self, path: &Path, stage: &str, detail: &str) {
+        self.count += 1;
+        self.example.get_or_insert_with(|| {
+            let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("?");
+            format!("{stage} (.{extension}): {detail}")
+        });
+    }
 }
 
 struct Job {
@@ -165,7 +183,7 @@ impl Library {
                 .ok()?;
             serde_json::from_str(&metadata).ok()
         })()
-        .unwrap_or_else(|| read_tags(path));
+        .unwrap_or_else(|| read_tags(path, &mut ReadWarnings::default()));
         PlaybackTags {
             title: tags.name,
             artists: tags.artists,
@@ -191,7 +209,7 @@ impl Library {
         }
         let mut db = connect(&self.database)?;
         let tx = db.transaction()?;
-        let id = index_track(&tx, path, Some(download.tags))?;
+        let id = index_track(&tx, path, Some(download.tags), &mut ReadWarnings::default())?;
         youtube::record(&tx, id, download)?;
         for root in sources {
             tx.execute(
@@ -266,7 +284,7 @@ pub(crate) fn supported(path: &Path) -> bool {
         })
 }
 
-fn read_tags(path: &Path) -> Tags {
+fn read_tags(path: &Path, warnings: &mut ReadWarnings) -> Tags {
     let mut tags = Tags {
         name: path
             .file_stem()
@@ -274,8 +292,21 @@ fn read_tags(path: &Path) -> Tags {
             .unwrap_or_default(),
         ..Tags::default()
     };
-    let options = ParseOptions::new().read_cover_art(false);
-    if let Ok(file) = Probe::open(path).and_then(|probe| probe.options(options).read()) {
+    let mut options = ParseOptions::new().read_cover_art(false);
+    let probe = |options| {
+        catch_unwind(|| Probe::open(path).and_then(|probe| probe.options(options).read()))
+    };
+    let file = match probe(options) {
+        Ok(file) => file.ok(),
+        Err(panic) => {
+            warnings.record(path, "Lofty metadata", crate::panic_message(&*panic));
+            // Lofty can fail while calculating stream properties even when the tags are readable.
+            probe(options.read_properties(false))
+                .ok()
+                .and_then(Result::ok)
+        }
+    };
+    if let Some(file) = file {
         let duration = file.properties().duration().as_secs_f64();
         tags.duration = (duration > 0.0).then_some(duration);
         if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
@@ -307,11 +338,21 @@ fn read_tags(path: &Path) -> Tags {
         }
     }
     if tags.duration.is_none() {
-        tags.duration = audio::source::open(path).ok().and_then(|source| {
-            source
-                .total_duration()
-                .map(|duration| duration.as_secs_f64())
-        });
+        match audio::source::open(path) {
+            Ok(source) => {
+                tags.duration = source
+                    .total_duration()
+                    .map(|duration| duration.as_secs_f64())
+            }
+            Err(error) => {
+                if let Some(error) = error
+                    .downcast_ref::<std::io::Error>()
+                    .filter(|error| error.kind() == std::io::ErrorKind::InvalidData)
+                {
+                    warnings.record(path, "Track duration", &error.to_string());
+                }
+            }
+        }
     }
     tags
 }
@@ -320,6 +361,7 @@ fn index_track(
     tx: &Transaction<'_>,
     path: &Path,
     downloaded_tags: Option<&youtube::DownloadTags>,
+    warnings: &mut ReadWarnings,
 ) -> LibraryResult<i64> {
     let metadata = fs::metadata(path)?;
     let stamp = metadata
@@ -342,7 +384,7 @@ fn index_track(
             return Ok(id);
         }
     }
-    let mut tags = read_tags(path);
+    let mut tags = read_tags(path, warnings);
     if let Some(downloaded) = downloaded_tags {
         downloaded.apply(&mut tags);
     } else if let Some(downloaded) = youtube::stored_tags(tx, key)? {
@@ -363,6 +405,7 @@ fn scan(
     db: &mut Connection,
     roots: &[String],
     cancelled: &AtomicBool,
+    warnings: &mut ReadWarnings,
     mut report: impl FnMut(Progress),
 ) -> LibraryResult<(bool, usize)> {
     let tx = db.transaction()?;
@@ -420,7 +463,7 @@ fn scan(
         if cancelled.load(Ordering::Acquire) {
             return Ok((true, unavailable));
         }
-        let id = match index_track(&tx, &path, None) {
+        let id = match index_track(&tx, &path, None, warnings) {
             Ok(id) => id,
             Err(error) if error.downcast_ref::<std::io::Error>().is_some() => {
                 if complete.remove(root) {
@@ -514,13 +557,16 @@ pub async fn library_scan(
     let outcome = tauri::async_runtime::spawn_blocking(move || -> LibraryResult<ScanResult> {
         let _writer = writer;
         let mut db = connect(&database)?;
-        let (cancelled, unavailable_folders) = scan(&mut db, &roots, &cancelled, |update| {
-            let _ = progress.send(update);
-        })?;
+        let mut read_warnings = ReadWarnings::default();
+        let (cancelled, unavailable_folders) =
+            scan(&mut db, &roots, &cancelled, &mut read_warnings, |update| {
+                let _ = progress.send(update);
+            })?;
         Ok(ScanResult {
             cancelled,
             unavailable_folders,
             catalog: read_status(&db)?,
+            read_warnings,
         })
     })
     .await;
@@ -571,6 +617,58 @@ mod tests {
     }
 
     #[test]
+    fn scan_keeps_opus_tags_when_duration_rounds_to_zero() {
+        let temp = tempfile::tempdir().expect("test directory");
+        let root = temp.path().join("music");
+        fs::create_dir(&root).expect("music directory");
+        // One PCM sample encoded with libopus. Lofty 0.25.5 rounds it to zero milliseconds.
+        fs::write(
+            root.join("Short.opus"),
+            include_bytes!("fixtures/one-sample.opus"),
+        )
+        .expect("write short Opus fixture");
+        fixture(&root, "Good.wav");
+
+        let database = temp.path().join("catalog.sqlite3");
+        Library::new(database.clone()).expect("initialize catalog");
+        let mut db = connect(&database).expect("open catalog");
+        let roots = vec![root.to_string_lossy().into_owned()];
+        let mut warnings = ReadWarnings::default();
+        scan(
+            &mut db,
+            &roots,
+            &AtomicBool::new(false),
+            &mut warnings,
+            |_| {},
+        )
+        .expect("scan");
+
+        let catalog = read_catalog(&db).expect("read catalog");
+        let names: Vec<_> = catalog
+            .tracks
+            .iter()
+            .map(|track| track.tags.name.as_str())
+            .collect();
+        assert_eq!(names, ["Good", "Short track"]);
+        assert_eq!(warnings.count, 1);
+    }
+
+    #[test]
+    fn duration_probe_recovers_from_a_wav_with_zero_sample_rate() {
+        let temp = tempfile::tempdir().expect("test directory");
+        fixture(temp.path(), "Broken.wav");
+        let broken = temp.path().join("Broken.wav");
+        let mut bytes = fs::read(&broken).expect("read WAV fixture");
+        bytes[24..28].copy_from_slice(&0_u32.to_le_bytes());
+        fs::write(&broken, bytes).expect("write WAV with zero sample rate");
+
+        let mut warnings = ReadWarnings::default();
+        let tags = read_tags(&broken, &mut warnings);
+        assert!(tags.duration.is_none());
+        assert_eq!(warnings.count, 1);
+    }
+
+    #[test]
     fn overlapping_and_offline_folders_preserve_track_identity() {
         let temp = tempfile::tempdir().expect("test directory");
         let root = temp.path().join("music");
@@ -585,13 +683,27 @@ mod tests {
             nested.to_string_lossy().into_owned(),
         ];
         let running = AtomicBool::new(false);
-        scan(&mut db, &roots, &running, |_| {}).expect("scan");
+        scan(
+            &mut db,
+            &roots,
+            &running,
+            &mut ReadWarnings::default(),
+            |_| {},
+        )
+        .expect("scan");
         let first = read_catalog(&db).expect("read catalog");
         assert_eq!(first.tracks.len(), 1);
 
         fs::rename(&root, temp.path().join("offline")).expect("simulate disconnected folder");
         assert_eq!(
-            scan(&mut db, &roots, &running, |_| {}).expect("rescan"),
+            scan(
+                &mut db,
+                &roots,
+                &running,
+                &mut ReadWarnings::default(),
+                |_| {}
+            )
+            .expect("rescan"),
             (false, 2)
         );
         let second = read_catalog(&db).expect("read retained catalog");
@@ -609,15 +721,28 @@ mod tests {
         let mut db = connect(&database).expect("open catalog");
         let roots = vec![root.to_string_lossy().into_owned()];
         let cancelled = AtomicBool::new(false);
-        scan(&mut db, &roots, &cancelled, |_| {}).expect("initial scan");
+        scan(
+            &mut db,
+            &roots,
+            &cancelled,
+            &mut ReadWarnings::default(),
+            |_| {},
+        )
+        .expect("initial scan");
 
         fs::remove_file(root.join("Original.wav")).expect("remove fixture");
         fixture(&root, "New.wav");
-        let outcome = scan(&mut db, &roots, &cancelled, |progress| {
-            if progress.current == 1 {
-                cancelled.store(true, Ordering::Release);
-            }
-        })
+        let outcome = scan(
+            &mut db,
+            &roots,
+            &cancelled,
+            &mut ReadWarnings::default(),
+            |progress| {
+                if progress.current == 1 {
+                    cancelled.store(true, Ordering::Release);
+                }
+            },
+        )
         .expect("cancelled scan");
         assert!(outcome.0);
         let catalog = read_catalog(&db).expect("read retained catalog");
