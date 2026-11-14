@@ -173,6 +173,7 @@ pub fn run() {
             updates::check_arch_update,
             updates::download_arch_update,
             audio::audio_control,
+            audio::info::track_audio_info,
             external_tools::check_yt_dlp,
             external_tools::get_yt_dlp_location,
             external_tools::yt_dlp_bundle::install_yt_dlp_bundle,

@@ -33,6 +33,24 @@ pub fn open(path: &Path) -> Result<Box<dyn Source + Send>, AudioError> {
     })?
 }
 
+pub(super) fn probe_format(path: &Path) -> Result<Box<dyn FormatReader>, AudioError> {
+    let input = MediaSourceStream::new(
+        Box::new(File::open(path)?),
+        MediaSourceStreamOptions::default(),
+    );
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+        hint.with_extension(extension);
+    }
+    let options = FormatOptions {
+        enable_gapless: true,
+        ..FormatOptions::default()
+    };
+    Ok(symphonia::default::get_probe()
+        .format(&hint, input, &options, &MetadataOptions::default())?
+        .format)
+}
+
 enum Opus {
     Standard(Box<OpusDecoder>),
     Multistream(OpusMultistreamDecoder),
@@ -59,21 +77,7 @@ const MAX_FRAMES: usize = 5_760;
 
 impl OpusSource {
     fn open(path: &Path) -> Result<Option<Self>, AudioError> {
-        let input = MediaSourceStream::new(
-            Box::new(File::open(path)?),
-            MediaSourceStreamOptions::default(),
-        );
-        let mut hint = Hint::new();
-        if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-            hint.with_extension(extension);
-        }
-        let options = FormatOptions {
-            enable_gapless: true,
-            ..FormatOptions::default()
-        };
-        let reader = symphonia::default::get_probe()
-            .format(&hint, input, &options, &MetadataOptions::default())?
-            .format;
+        let reader = probe_format(path)?;
         let Some(track) = reader
             .tracks()
             .iter()

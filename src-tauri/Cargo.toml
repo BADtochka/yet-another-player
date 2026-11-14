@@ -72,6 +72,7 @@ keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
 windows = { version = "0.62.2", features = [
-  "Media", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_System_WinRT"
+  "Media", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_System_WinRT",
+  "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"
 ] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
