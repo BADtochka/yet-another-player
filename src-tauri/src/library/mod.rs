@@ -1,6 +1,8 @@
+pub(crate) mod external;
+mod ommr;
 pub mod playlists;
 pub mod queries;
-pub(crate) mod youtube;
+pub(crate) mod versions;
 
 use std::{
     collections::HashSet,
@@ -22,7 +24,7 @@ use lofty::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
-use tauri::{ipc::Channel, State};
+use tauri::{ipc::Channel, AppHandle, State};
 use walkdir::WalkDir;
 
 use crate::{audio, MusicFolders};
@@ -44,6 +46,17 @@ struct Tags {
     disc_number: Option<u32>,
     track_number: Option<u32>,
     genre: Option<String>,
+    release_date: Option<String>,
+    isrc: Option<String>,
+    cover_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_video_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clip_video_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    has_local_video: bool,
+    #[serde(default)]
+    fallback_title: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -58,8 +71,52 @@ pub(crate) struct PlaybackTags {
 pub struct Track {
     id: i64,
     path: String,
+    #[serde(rename = "albumId")]
+    album_id: String,
     #[serde(flatten)]
     tags: Tags,
+}
+
+impl Track {
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn from_metadata(id: i64, path: String, metadata: &str) -> LibraryResult<Self> {
+        let tags: Tags = serde_json::from_str(metadata)?;
+        let album_id = tags.album_id(id)?;
+        Ok(Self {
+            id,
+            path,
+            album_id,
+            tags,
+        })
+    }
+}
+
+impl Tags {
+    fn album_name(&self) -> Option<&str> {
+        self.album
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
+    fn album_id(&self, id: i64) -> LibraryResult<String> {
+        match self.album_name() {
+            Some(album) => {
+                let artists = self.artists.join(", ");
+                let artist = self
+                    .album_artist
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&artists);
+                Ok(serde_json::to_string(&[album, artist])?)
+            }
+            None => Ok(format!("single:{id}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +173,7 @@ pub struct Library {
     database: PathBuf,
     active: ActiveJob,
     catalog_writer: Arc<tokio::sync::Mutex<()>>,
+    resolver: Arc<ommr::Worker>,
 }
 
 impl Library {
@@ -125,8 +183,11 @@ impl Library {
         }
         let mut connection = connect(&database)?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 4 {
+        if version > 9 {
             return Err("Unsupported catalog version".into());
+        }
+        if (4..9).contains(&version) {
+            external::migrate_source_names(&mut connection)?;
         }
         if version == 0 {
             let tx = connection.transaction()?;
@@ -157,13 +218,64 @@ impl Library {
             queries::migrate(&mut connection)?;
         }
         if version < 4 {
-            youtube::migrate(&mut connection)?;
+            external::migrate(&mut connection)?;
+        }
+        if version < 5 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE fetched_lyrics (
+                    track_id INTEGER PRIMARY KEY REFERENCES track(id),
+                    text TEXT NOT NULL
+                );
+                CREATE TABLE resolver_cache (
+                    query TEXT PRIMARY KEY, checked INTEGER NOT NULL, response TEXT NOT NULL
+                );
+                PRAGMA user_version = 5;",
+            )?;
+            tx.commit()?;
+        }
+        if version < 6 {
+            queries::migrate_added_date(&mut connection)?;
+        }
+        if version < 7 {
+            queries::migrate_singles(&mut connection)?;
+        }
+        if version < 8 {
+            versions::migrate(&mut connection)?;
+        }
+        if version < 9 {
+            versions::refresh_local_video(&mut connection)?;
         }
         Ok(Self {
             database,
             active: Arc::default(),
             catalog_writer: Arc::default(),
+            resolver: Arc::default(),
         })
+    }
+
+    pub(crate) fn database_path(&self) -> &Path {
+        &self.database
+    }
+
+    pub(crate) fn local_video(&self, audio: &Path) -> LibraryResult<Option<String>> {
+        Ok(versions::video_path(&connect(&self.database)?, audio)?)
+    }
+
+    pub(crate) fn fetched_lyrics(&self, path: &Path) -> Option<String> {
+        read_fetched_lyrics(&self.database, path).ok().flatten()
+    }
+
+    pub(crate) fn resolver_cover(&self, path: &Path) -> Option<String> {
+        connect(&self.database)
+            .ok()?
+            .query_row(
+                "SELECT json_extract(metadata, '$.coverUrl') FROM track WHERE path=?1",
+                [path.to_str()?],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
     }
 
     pub(crate) async fn lock_catalog_writer(&self) -> tokio::sync::OwnedMutexGuard<()> {
@@ -196,7 +308,7 @@ impl Library {
         &self,
         path: &Path,
         roots: &[String],
-        download: youtube::Download<'_>,
+        download: external::Download<'_>,
     ) -> LibraryResult<Track> {
         let sources = roots
             .iter()
@@ -209,24 +321,30 @@ impl Library {
         }
         let mut db = connect(&self.database)?;
         let tx = db.transaction()?;
-        let id = index_track(&tx, path, Some(download.tags), &mut ReadWarnings::default())?;
-        youtube::record(&tx, id, download)?;
+        let id = index_track(
+            &tx,
+            path,
+            Some((download.video_id, download.tags)),
+            &mut ReadWarnings::default(),
+        )?;
+        external::record(&tx, id, download)?;
         for root in sources {
             tx.execute(
                 "INSERT OR IGNORE INTO source VALUES (?1, ?2)",
                 params![root, id],
             )?;
         }
+        versions::rebuild(&tx)?;
+        let id = versions::audio_id(&tx, id)?;
         let (path, tags) = tx.query_row(
-            "SELECT path, metadata FROM track WHERE id = ?1",
+            &format!(
+                "SELECT t.path, {} FROM track t WHERE t.id=?1",
+                versions::METADATA
+            ),
             [id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?;
-        let track = Track {
-            id,
-            path,
-            tags: serde_json::from_str(&tags)?,
-        };
+        let track = Track::from_metadata(id, path, &tags)?;
         tx.execute("UPDATE catalog_state SET revision = revision + 1", [])?;
         tx.commit()?;
         Ok(track)
@@ -240,9 +358,34 @@ fn connect(path: &Path) -> rusqlite::Result<Connection> {
     Ok(db)
 }
 
+pub(crate) fn read_fetched_lyrics(database: &Path, path: &Path) -> LibraryResult<Option<String>> {
+    Ok(connect(database)?
+        .query_row(
+            "SELECT l.text FROM fetched_lyrics l JOIN track t ON t.id=l.track_id WHERE t.path=?1",
+            [path.to_str()],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+pub(crate) fn save_fetched_lyrics(database: &Path, path: &Path, text: &str) -> LibraryResult<()> {
+    let db = connect(database)?;
+    if db.execute(
+        "INSERT INTO fetched_lyrics (track_id, text)
+         SELECT t.id, ?2 FROM track t WHERE t.path=?1
+           AND EXISTS (SELECT 1 FROM source WHERE track_id=t.id)
+         ON CONFLICT(track_id) DO UPDATE SET text=excluded.text",
+        params![path.to_str(), text],
+    )? == 0
+    {
+        return Err("Track is absent from the catalog".into());
+    }
+    Ok(())
+}
+
 fn read_status(db: &Connection) -> LibraryResult<CatalogStatus> {
     Ok(db.query_row(
-        "SELECT initialized, (SELECT COUNT(DISTINCT track_id) FROM source) FROM catalog_state",
+        "SELECT initialized, (SELECT COUNT(DISTINCT track_id) FROM source WHERE track_id NOT IN (SELECT variant_id FROM track_variant)) FROM catalog_state",
         [],
         |row| {
             Ok(CatalogStatus {
@@ -263,12 +406,11 @@ fn read_catalog(db: &Connection) -> LibraryResult<Catalog> {
     let mut rows = query.query(())?;
     let mut tracks = Vec::new();
     while let Some(row) = rows.next()? {
-        let metadata: String = row.get(2)?;
-        tracks.push(Track {
-            id: row.get(0)?,
-            path: row.get(1)?,
-            tags: serde_json::from_str(&metadata)?,
-        });
+        tracks.push(Track::from_metadata(
+            row.get(0)?,
+            row.get(1)?,
+            &row.get::<_, String>(2)?,
+        )?);
     }
     Ok(Catalog { tracks })
 }
@@ -279,7 +421,7 @@ pub(crate) fn supported(path: &Path) -> bool {
         .is_some_and(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "mp3" | "m4a" | "ogg" | "opus" | "webm" | "wav" | "flac"
+                "mp3" | "m4a" | "mp4" | "ogg" | "opus" | "webm" | "wav" | "flac"
             )
         })
 }
@@ -290,6 +432,7 @@ fn read_tags(path: &Path, warnings: &mut ReadWarnings) -> Tags {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        fallback_title: true,
         ..Tags::default()
     };
     let mut options = ParseOptions::new().read_cover_art(false);
@@ -312,6 +455,7 @@ fn read_tags(path: &Path, warnings: &mut ReadWarnings) -> Tags {
         if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
             if let Some(title) = tag.title().filter(|title| !title.trim().is_empty()) {
                 tags.name = title.into_owned();
+                tags.fallback_title = false;
             }
             tags.artists = tag
                 .get_strings(ItemKey::TrackArtist)
@@ -322,7 +466,14 @@ fn read_tags(path: &Path, warnings: &mut ReadWarnings) -> Tags {
                 .collect();
             tags.album = tag.album().map(|name| name.into_owned());
             tags.album_artist = tag.get_string(ItemKey::AlbumArtist).map(str::to_owned);
-            tags.year = tag.date().map(|date| date.year);
+            let date = tag.date();
+            let release = tag
+                .get_string(ItemKey::ReleaseDate)
+                .and_then(|value| value.parse().ok())
+                .or(date);
+            tags.year = release.map(|date| date.year);
+            tags.release_date = release.map(|date| date.to_string());
+            tags.isrc = tag.get_string(ItemKey::Isrc).map(str::to_owned);
             tags.track_number = tag.track();
             tags.disc_number = tag.disk();
             tags.genre = tag.genre().map(|genre| genre.into_owned());
@@ -360,7 +511,7 @@ fn read_tags(path: &Path, warnings: &mut ReadWarnings) -> Tags {
 fn index_track(
     tx: &Transaction<'_>,
     path: &Path,
-    downloaded_tags: Option<&youtube::DownloadTags>,
+    downloaded_tags: Option<(&str, &external::DownloadTags)>,
     warnings: &mut ReadWarnings,
 ) -> LibraryResult<i64> {
     let metadata = fs::metadata(path)?;
@@ -375,7 +526,8 @@ fn index_track(
     if downloaded_tags.is_none() && !stamp.is_empty() {
         let existing = tx
             .query_row(
-                "SELECT id FROM track WHERE path = ?1 AND stamp = ?2 AND size = ?3",
+                "SELECT id FROM track WHERE path = ?1 AND stamp = ?2 AND size = ?3
+                 AND json_type(metadata, '$.fallbackTitle') IS NOT NULL",
                 params![key, stamp, size],
                 |row| row.get(0),
             )
@@ -385,13 +537,28 @@ fn index_track(
         }
     }
     let mut tags = read_tags(path, warnings);
-    if let Some(downloaded) = downloaded_tags {
+    tags.has_local_video = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+        && versions::has_video(path);
+    if let Some((video_id, downloaded)) = downloaded_tags {
         downloaded.apply(&mut tags);
-    } else if let Some(downloaded) = youtube::stored_tags(tx, key)? {
+        if downloaded.is_clip {
+            tags.clip_video_id = Some(video_id.to_owned());
+        }
+        tags.external_video_id = Some(video_id.to_owned());
+    } else if let Some((video_id, downloaded)) = external::stored_tags(tx, key)? {
         downloaded.apply(&mut tags);
+        if downloaded.is_clip {
+            tags.clip_video_id = Some(video_id.to_owned());
+        }
+        tags.external_video_id = Some(video_id);
+    } else {
+        tags.external_video_id = external::legacy_id(path).map(str::to_owned);
     }
     let id = tx.query_row(
-        "INSERT INTO track (path, stamp, size, metadata) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO track (path, stamp, size, metadata, added_at)
+         VALUES (?1, ?2, ?3, ?4, CAST(unixepoch('subsec') * 1000 AS INTEGER))
          ON CONFLICT(path) DO UPDATE SET stamp=excluded.stamp, size=excluded.size, metadata=excluded.metadata
          RETURNING id",
         params![key, stamp, size, serde_json::to_string(&tags)?],
@@ -505,6 +672,7 @@ fn scan(
     if cancelled.load(Ordering::Acquire) {
         return Ok((true, unavailable));
     }
+    versions::rebuild(&tx)?;
     tx.execute("UPDATE catalog_state SET revision = revision + 1", [])?;
     tx.commit()?;
     Ok((false, unavailable))
@@ -526,10 +694,13 @@ pub async fn library_catalog_status(state: State<'_, Library>) -> Result<Catalog
 
 #[tauri::command]
 pub async fn library_scan(
+    app: AppHandle,
     state: State<'_, Library>,
     folders: State<'_, MusicFolders>,
     id: String,
     progress: Channel<Progress>,
+    resolver: Option<crate::external_tools::ommr::Configuration>,
+    resolver_url: Option<String>,
 ) -> Result<ScanResult, String> {
     let roots = folders
         .configured
@@ -571,8 +742,51 @@ pub async fn library_scan(
     })
     .await;
     *active.lock().map_err(|_| "Медиатека недоступна")? = None;
-    outcome
+    let outcome = outcome
         .map_err(|error| error.to_string())?
+        .map_err(user_error)?;
+    if !outcome.cancelled {
+        state.resolver.schedule(
+            app,
+            state.database.clone(),
+            Arc::clone(&state.catalog_writer),
+            resolver.unwrap_or_else(|| crate::external_tools::ommr::Configuration {
+                mode: if resolver_url
+                    .as_deref()
+                    .is_some_and(|url| !url.trim().is_empty())
+                {
+                    crate::external_tools::ommr::Mode::Remote
+                } else {
+                    crate::external_tools::ommr::Mode::Off
+                },
+                url: resolver_url,
+                sources: Vec::new(),
+            }),
+        );
+    }
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub(crate) async fn library_enrich_download(
+    state: State<'_, Library>,
+    app: AppHandle,
+    track_id: i64,
+    resolver: crate::external_tools::ommr::Configuration,
+) -> Result<(), String> {
+    if track_id <= 0 {
+        return Err("Недопустимый идентификатор трека".into());
+    }
+    state
+        .resolver
+        .enrich_download(
+            &app,
+            &state.database,
+            &state.catalog_writer,
+            resolver,
+            track_id,
+        )
+        .await
         .map_err(user_error)
 }
 

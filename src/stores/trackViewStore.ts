@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type TrackSort = 'name' | 'artist' | 'duration';
+export type TrackSort = 'name' | 'artist' | 'duration' | 'added';
 export type LibrarySort = TrackSort | 'releaseYear' | 'created';
 
 type TrackViewState = {

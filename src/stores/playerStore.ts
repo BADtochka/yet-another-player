@@ -40,6 +40,7 @@ type AudioSnapshot = {
 
 type AudioAction =
   | { type: 'snapshot' | 'next' | 'previous' | 'toggleShuffle' | 'cycleRepeat' }
+  | { type: 'append'; track: Pick<Track, 'path' | 'replayGainDb'> }
   | { type: 'jump'; index: number; generation: number }
   | { type: 'configure'; volume: number; normalization: VolumeNormalizationLevel | 'off' }
   | { type: 'queue'; tracks: Pick<Track, 'path' | 'replayGainDb'>[]; index: number; position: number; playing: boolean }
@@ -166,6 +167,12 @@ const queueAction = (queue: Track[], index: number, position: number, playing: b
   playing,
 });
 
+export const playDownloadedTrack = async (track: Track) => {
+  const snapshot = await send(queueAction([track], 0, 0, true));
+  if (snapshot.error) return false;
+  return snapshot.path === track.path && snapshot.playing;
+};
+
 type QueueTarget = { type: 'id'; id: number } | { type: 'path'; path: string } | { type: 'first' | 'last' };
 const libraryOrder: TrackQuery = { sort: 'path', text: '' };
 
@@ -228,13 +235,16 @@ export const startPlayer = async () => {
   subscribeToCatalog(() => refreshCurrentTrack(usePlayerStore.getState().currentTrackPath));
 };
 
+export const addTrackToQueue = ({ path, replayGainDb }: Pick<Track, 'path' | 'replayGainDb'>) =>
+  send({ type: 'append', track: { path, replayGainDb } });
+
 export const inspectQueue = async (offset: number) => {
   const { queuePaths = [], queueGeneration, queueLength } = await invoke<AudioSnapshot>('audio_control', {
     action: { type: 'inspectQueue', offset },
   });
   const metadata = new Map((await tracksByPaths(queuePaths)).map((track) => [track.path, track]));
   const entries = queuePaths.map((path) => ({ path, track: metadata.get(path) }));
-  return { entries, generation: queueGeneration, length: queueLength };
+  return { entries, offset, generation: queueGeneration, length: queueLength };
 };
 
 export const usePlayerStore = create<PlayerState>((_set, get) => ({
@@ -242,7 +252,7 @@ export const usePlayerStore = create<PlayerState>((_set, get) => ({
   queueIndex: 0,
   nextTrackPath: null,
   shuffle: false,
-  repeat: 'all',
+  repeat: 'off',
   toggleShuffle: () => dispatch({ type: 'toggleShuffle' }),
   cycleRepeat: () => dispatch({ type: 'cycleRepeat' }),
   jumpToQueueItem: (index, generation) => dispatch({ type: 'jump', index, generation }),

@@ -1,21 +1,20 @@
+import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { createFileRoute } from '@tanstack/react-router';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
 import { ExternalResult } from '@/components/ExternalResult';
-import { Progress } from '@/components/Progress';
 import { CollectionCard, CollectionList } from '@/components/Collections';
-import { SeekBar } from '@/components/SeekBar';
 import { Track } from '@/components/Track';
 import { YtDlpChecking } from '@/components/YtDlpFeedback';
 import { usePlayerStore, useSettingsStore } from '@/stores';
-import { useCollections, useTrackPages, useYoutubeTracks, type TrackQuery } from '@/hooks/useLibrary';
-import { closePreview, playTrackQuery, preparePreview, seekPreview, setPreviewPlaying, type AudioPreview } from '@/stores/playerStore';
+import { useCollections, useTrackPages, useExternalTracks, type TrackQuery } from '@/hooks/useLibrary';
+import { playTrackQuery } from '@/stores/playerStore';
 import { addSearchHistory } from '@/stores/searchHistory';
 import type { Track as LibraryTrack } from '@/types/Track';
-import { formatPlaybackTime } from '@/utils/formatPlaybackTime';
-import { cancelMusicDownload, downloadMusic, useMusicDownload } from '@/utils/musicDownload';
+import { downloadAndPlayMusic, useMusicDownload } from '@/utils/musicDownload';
+import { checkPlayerVideo, showPlayerVideo } from '@/utils/playerVideo';
 import { toast } from '@/utils/toast';
-import { runYtDlpSearch, startMusicPreview, useYtDlpStatus, YtDlpError, type MusicSearchResult } from '@/utils/ytDlp';
+import { runYtDlpSearch, useYtDlpStatus, YtDlpError, type MusicSearchResult } from '@/utils/ytDlp';
 
 const tabs = [
   ['all', 'Все'], ['tracks', 'Треки'], ['playlists', 'Плейлисты'],
@@ -38,15 +37,14 @@ function Search() {
   const [remote, setRemote] = useState<{ key: string; items: MusicSearchResult[]; error?: string }>();
   const [searchAttempt, setSearchAttempt] = useState(0);
   const checkingTool = useYtDlpStatus((state) => state.checking);
-  const preview = usePlayerStore((state) => state.preview);
-  const previewRequest = useRef<{ id?: number }>();
-  const downloading = useMusicDownload((state) => state.active !== null);
+  const activeVideo = useMusicDownload((state) => state.active?.videoId);
   const query = q.trim();
   const remoteVisible = query.length >= 2;
+  const showRemote = remoteVisible && (tab === 'all' || tab === 'tracks');
   const remoteKey = JSON.stringify([query, request, searchAttempt]);
   const currentRemote = remote?.key === remoteKey ? remote : undefined;
   const external = currentRemote?.items ?? [];
-  const links = useYoutubeTracks(external.map(({ id }) => id));
+  const links = useExternalTracks(external.map(({ id }) => id));
   const remoteError = currentRemote?.error;
   const searching = remoteVisible && !currentRemote;
   const visible = (kind: Tab) => query !== '' && (tab === 'all' || tab === kind);
@@ -66,12 +64,7 @@ function Search() {
         setRemote({ key: remoteKey, items: [], error: error instanceof YtDlpError ? error.message : 'Внешний поиск недоступен.' });
       }
     });
-    return () => {
-      active = false;
-      const id = previewRequest.current?.id;
-      previewRequest.current = undefined;
-      if (id !== undefined) closePreview(id);
-    };
+    return () => { active = false; };
   }, [remoteKey, remoteVisible]);
 
   const indexedIds = new Set(tracks.tracks.map((track) => track.id));
@@ -85,37 +78,16 @@ function Search() {
     || (visible('playlists') && !playlists);
   const localError = tracks.error ?? albums?.error ?? artists?.error ?? playlists?.error;
 
-  const onPreview = async (result: MusicSearchResult) => {
-    if (previewRequest.current && previewRequest.current.id === undefined) return;
-    const request: { id?: number } = {};
-    previewRequest.current = request;
-    try {
-      const id = await preparePreview(result.title, result.artist ?? '');
-      request.id = id;
-      if (previewRequest.current !== request) {
-        closePreview(id);
-        return;
-      }
-      await startMusicPreview(id, result.id);
-    } catch (error) {
-      if (previewRequest.current !== request) return;
-      previewRequest.current = undefined;
-      const cancelled = error instanceof YtDlpError && error.state === 'previewCancelled';
-      if (!cancelled && !isGatekeeperBlock(error)) {
-        toast.error('Не удалось открыть предпросмотр', error);
-      }
-    }
-  };
-
-  const onDownload = async (result: MusicSearchResult) => {
-    if (downloading) return;
+  const onDownload = async (result: MusicSearchResult, video = false) => {
+    if (useMusicDownload.getState().active) return;
     if (useSettingsStore.getState().musicFolders.length === 0) {
       toast.error('Добавьте папку медиатеки в настройках');
       return;
     }
     try {
-      const { alreadyPresent } = await downloadMusic(result.id, 0);
-      toast.info(alreadyPresent ? 'Трек уже в медиатеке' : 'Трек добавлен в медиатеку');
+      const track = await downloadAndPlayMusic(result.id, 0, video);
+      addSearchHistory({ query, trackId: track.id, title: track.name, artist: track.artists.join(', ') });
+      if (video) await showPlayerVideo({ ...track, clipVideoId: result.id });
     } catch (error) {
       if (error instanceof YtDlpError && error.state === 'downloadCancelled') {
         toast.info(error.message);
@@ -123,6 +95,15 @@ function Search() {
         toast.error('Не удалось добавить трек', error);
       }
     }
+  };
+
+  const openVideo = async (result: MusicSearchResult, local?: LibraryTrack) => {
+    if (!await checkPlayerVideo(result.id)) {
+      toast.info('Видео для этого трека недоступно');
+      return;
+    }
+    if (local) await showPlayerVideo({ ...local, clipVideoId: result.id });
+    else await onDownload(result, true);
   };
 
   const playLocal = (track: LibraryTrack) => {
@@ -141,21 +122,18 @@ function Search() {
     artists: 'Локальные исполнители', albums: 'Локальные альбомы',
   }[tab];
   const noRemote = remoteVisible && !searching && !remoteError && external.length === 0;
-  const noLocal = !localFound && !localLoading && !localError;
-  const noResults = noLocal && (noRemote || !remoteVisible);
   const focusSearch = () => {
     const input = document.querySelector<HTMLInputElement>('.app-search input');
     input?.focus();
     input?.select();
   };
 
-  if (!query) return <DownloadStatus />;
+  if (!query) return null;
 
   return (
     <section className='search-page'>
       <header className='search-heading'>
-        <h1>{noResults ? 'Поиск' : `Результаты для «${query}»`}</h1>
-        <p>{noResults ? 'Проверьте написание или измените запрос' : 'Сначала внешние результаты, затем локальная медиатека'}</p>
+        <h1>Результаты для «{query}»</h1>
       </header>
       <div className='search-tabs' role='group' aria-label='Категория результатов'>
         {tabs.map(([value, title]) => (
@@ -163,56 +141,10 @@ function Search() {
             onClick={() => void navigate({ search: { q, tab: value, request } })}>{title}</Button>
         ))}
       </div>
-      <DownloadStatus />
-      {remoteVisible && (
-        <section className='search-section search-remote'>
-          {noRemote ? (
-            <div className='search-empty'>
-              <p>Внешний поиск</p>
-              <h2>Ничего не найдено</h2>
-              <p>Попробуйте более короткий запрос, имя автора или прямую ссылку.</p>
-              <Button size='small' variant='primary' onClick={focusSearch}>Изменить запрос</Button>
-            </div>
-          ) : (
-            <header className='search-heading'>
-              <h2>Внешние результаты</h2>
-              <p>Песни из YouTube Music и музыкальные видео</p>
-            </header>
-          )}
-          {searching && <YtDlpChecking label={checkingTool ? undefined : 'Ищем в YouTube Music…'} />}
-          {remoteError && (
-            <div className='search-empty' role='status'>
-              <h3>Внешний поиск недоступен</h3>
-              <p>{remoteError}</p>
-              <Button size='small' onClick={() => setSearchAttempt((attempt) => attempt + 1)}>Повторить поиск</Button>
-            </div>
-          )}
-          {preview && <PreviewControls key={preview.id} preview={preview} />}
-          {external.length > 0 && (
-            <div className='search-external'>
-              {external.map((result) => {
-                const local = links?.data?.[result.id];
-                return <ExternalResult key={result.id} result={result} linked={Boolean(local)} downloading={downloading}
-                  preview={() => local ? playLocal(local) : void onPreview(result)}
-                  action={() => local ? playLocal(local) : void onDownload(result)} />;
-              })}
-            </div>
-          )}
-        </section>
-      )}
-      <section className='search-section search-local'>
-        <header className='search-heading'>
-          <h2>{localTitle}</h2>
-          <p>{noLocal ? 'Совпадений нет' : tab === 'all' ? 'Результаты по категориям' : 'Доступно без сети'}</p>
-        </header>
-        {localLoading && <p className='kit-message' role='status'>Ищем в медиатеке…</p>}
+      {(localFound || localLoading || localError) && <section className='search-section search-local'>
+        {localFound && <header className='search-heading'><h2>{localTitle}</h2></header>}
+        {localLoading && <LoadingIndicator className='kit-message' label='Поиск в медиатеке' />}
         {localError && <p className='kit-message' role='alert'>{localError}</p>}
-        {noLocal && (
-          <div className='search-empty'>
-            <h3>Нет локальных результатов</h3>
-            <p>Загруженные треки, альбомы и плейлисты появятся здесь.</p>
-          </div>
-        )}
         {tab === 'all' ? (
           <>
             <div className='track-collection' data-layout='grid'>
@@ -239,82 +171,48 @@ function Search() {
                 {localTracks.map((track) => <Track key={track.id} track={track} onPlay={playLocal} />)}
               </div>
             )}
-            {tracks.hasMore && <Button size='small' className='justify-self-start' onClick={tracks.loadMore}>Показать ещё</Button>}
+            {tracks.hasMore && <Button size='small' className='justify-self-start' pending={tracks.loadingMore} onClick={tracks.loadMore}>Показать ещё</Button>}
             {collections.map(({ kind, items, route }) => items.length > 0 && (
               <CollectionList key={kind} items={items} kind={kind} empty='' search
                 open={(collection) => void navigate({ to: route, search: { collection } })} />
             ))}
           </>
         )}
-      </section>
+      </section>}
+      {showRemote && (
+        <section className='search-section search-remote'>
+          <header className='search-heading'>
+            <h2>Внешние результаты</h2>
+          </header>
+          {noRemote && (
+            <div className='search-empty'>
+              <h3>Ничего не найдено</h3>
+              <p>Попробуйте более короткий запрос, имя автора или прямую ссылку.</p>
+              <Button size='small' variant='primary' onClick={focusSearch}>Изменить запрос</Button>
+            </div>
+          )}
+          {searching && <YtDlpChecking label={checkingTool ? undefined : 'Ищем во внешних источниках…'} />}
+          {remoteError && (
+            <div className='search-empty' role='status'>
+              <h3>Внешний поиск недоступен</h3>
+              <p>{remoteError}</p>
+              <Button size='small' onClick={() => setSearchAttempt((attempt) => attempt + 1)}>Повторить поиск</Button>
+            </div>
+          )}
+          {external.length > 0 && (
+            <div className='search-external'>
+              {external.map((result) => {
+                const local = links?.data?.[result.id];
+                return <ExternalResult key={result.id} result={result} localPath={local?.path}
+                  disabled={!local && activeVideo !== undefined}
+                  action={() => local ? playLocal(local) : void onDownload(result)}
+                  video={() => void openVideo(result, local).catch((error) => toast.error('Не удалось открыть видео', error))} />;
+              })}
+            </div>
+          )}
+        </section>
+      )}
     </section>
-  );
-}
-
-function PreviewControls({ preview }: { preview: AudioPreview }) {
-  const [drag, setDrag] = useState<number>();
-  const { id, title, artist, loading, playing, duration } = preview;
-  const position = drag ?? preview.position;
-  return (
-    <div className='flex flex-wrap items-center gap-3 rounded-xl border border-(--yap-border) bg-(--yap-surface) p-3'
-      role='group' aria-label='Предпросмотр'>
-      <div className='min-w-0'>
-        <p className='truncate font-semibold' title={title}>{title}</p>
-        {artist && <p className='track-artist truncate'>{artist}</p>}
-      </div>
-      {loading ? <YtDlpChecking label='Загружаем предпросмотр…' /> : (
-        <div className='flex min-w-0 grow flex-wrap items-center gap-3'>
-          <Button size='small' onClick={() => setPreviewPlaying(id, !playing)}>
-            {playing ? 'Пауза предпросмотра' : 'Продолжить предпросмотр'}
-          </Button>
-          <span className='text-xs tabular-nums'>{formatPlaybackTime(position)}</span>
-          <SeekBar label='Позиция предпросмотра' className='min-w-24 grow'
-            value={position} max={Math.max(duration ?? 0, 0.1)} disabled={!duration}
-            onSeek={setDrag} onSeekEnd={(value) => { setDrag(undefined); seekPreview(id, value); }} />
-          {duration !== null && <span className='text-xs tabular-nums'>{formatPlaybackTime(duration)}</span>}
-        </div>
-      )}
-      <Button size='small' onClick={() => closePreview(id)}>
-        {loading ? 'Отменить предпросмотр' : 'Закрыть предпросмотр'}
-      </Button>
-    </div>
-  );
-}
-
-const downloadLabels = {
-  preparing: 'Подготовка…',
-  downloading: 'Скачиваем аудио…',
-  processing: 'Обрабатываем аудио…',
-  waitingForLibrary: 'Ждём окончания обновления медиатеки…',
-  importing: 'Добавляем трек в медиатеку…',
-};
-
-function DownloadStatus() {
-  const active = useMusicDownload((state) => state.active);
-  if (!active) return null;
-
-  const { progress, cancelling } = active;
-  const phase = progress?.phase ?? 'preparing';
-  const percent = progress?.phase === 'downloading' ? progress.percent : null;
-  const label = cancelling ? 'Отменяем загрузку…' : downloadLabels[phase];
-
-  return (
-    <div className='flex flex-wrap items-center gap-3 text-(--yap-muted)'>
-      <span role='status'>{label}</span>
-      {phase === 'downloading' && !cancelling && (
-        <>
-          <Progress className='w-32' max={100} value={percent} label='Ход загрузки' />
-          {percent !== null && <span>{Math.round(percent)}%</span>}
-        </>
-      )}
-      {phase !== 'importing' && (
-        <Button size='small' variant='danger' disabled={!progress || cancelling}
-          aria-label='Отменить загрузку'
-          onClick={() => void cancelMusicDownload().catch((error) => toast.error('Не удалось отменить загрузку', error))}>
-          Отменить
-        </Button>
-      )}
-    </div>
   );
 }
 

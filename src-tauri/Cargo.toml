@@ -25,7 +25,7 @@ required-features = ["audio-probe"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -38,6 +38,7 @@ sha2 = "0.10"
 tempfile = "3"
 zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = { version = "0.4", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 rodio = { version = "0.23", default-features = false, features = [
   "playback", "mp3", "mp4", "vorbis", "symphonia-mkv", "flac", "wav"

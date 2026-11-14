@@ -8,6 +8,8 @@ export type CollectionSummary = {
   duration: number;
   trackCount: number;
   year: number | null;
+  addedAt: number | null;
+  firstTrackId: number | null;
 };
 
 export type Collection = Pick<CollectionSummary, 'id' | 'name' | 'subtitle'> & { tracks: Track[] };

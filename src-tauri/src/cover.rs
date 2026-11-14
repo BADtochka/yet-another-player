@@ -233,7 +233,7 @@ pub fn extract_cover_from_mp3(path: &Path) -> Option<(Vec<u8>, String)> {
     let offset = skip_extended_header(bytes, version, ID3_HEADER_SIZE);
 
     if version == 2 {
-        return extract_cover_v2_2(&bytes[offset..], tag_end.saturating_sub(offset));
+        return extract_cover_v2_2(bytes.get(offset..)?, tag_end.saturating_sub(offset));
     }
 
     let mut offset = offset;
@@ -284,7 +284,7 @@ pub fn load_cover(path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, &'static st
     Some((image, content_type_for_extension(extension_for_mime(&mime))))
 }
 
-fn extract_cover(path: &Path) -> Option<(Vec<u8>, String)> {
+pub(crate) fn extract_cover(path: &Path) -> Option<(Vec<u8>, String)> {
     let from_tags = || {
         let options = ParseOptions::new().read_properties(false);
         let file = Probe::open(path).ok()?.options(options).read().ok()?;
@@ -311,5 +311,8 @@ fn extract_cover(path: &Path) -> Option<(Vec<u8>, String)> {
             picture.mime_type()?.as_str().to_owned(),
         ))
     };
-    from_tags().or_else(|| extract_cover_from_mp3(path))
+    std::panic::catch_unwind(from_tags)
+        .ok()
+        .flatten()
+        .or_else(|| extract_cover_from_mp3(path))
 }

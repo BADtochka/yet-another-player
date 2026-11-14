@@ -1,16 +1,21 @@
 import { useLocation, useNavigate } from '@tanstack/react-router';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useOutsidePointer } from '@/hooks/useOutsidePointer';
 import { TracksToolbar } from '@/components/TracksToolbar';
 import { Artwork } from '@/components/MediaCard';
 import { Input } from '@/components/Input';
 import { Tab } from '@/components/Tab';
 import { addSearchHistory, useSearchHistory } from '@/stores/searchHistory';
+import { closePlayerVideo } from '@/utils/playerVideo';
 
 export function NavBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const searchForm = useRef<HTMLFormElement>(null);
+  const closeHistory = useCallback(() => setShowHistory(false), []);
+  useOutsidePointer(searchForm, showHistory, closeHistory);
   const input = useRef<HTMLInputElement>(null);
   const history = useSearchHistory((state) => state.entries);
   const { pathname } = location;
@@ -18,11 +23,12 @@ export function NavBar() {
   const currentQuery = pathname === '/search' ? params.get('q') ?? '' : '';
 
   useEffect(() => {
-    setQuery(currentQuery);
+    if (pathname === '/search') setQuery(currentQuery);
     setShowHistory(false);
   }, [pathname, currentQuery]);
 
   const search = (value: string) => {
+    closePlayerVideo();
     const q = value.trim();
     const repeating = pathname === '/search' && q !== '' && q === currentQuery;
     const previousRequest = Number(params.get('request'));
@@ -42,16 +48,20 @@ export function NavBar() {
 
   return (
     <>
-      <nav className='app-sidebar' aria-label='Медиатека'>
-        <Tab to='/' icon='Album' label='Альбомы' />
+      <nav className='app-sidebar' aria-label='Медиатека' onClick={(event) => {
+        if (event.target instanceof Element && event.target.closest('a')) closePlayerVideo();
+      }}>
         <Tab to='/tracks' icon='Track' label='Треки' />
+        <Tab to='/' icon='Album' label='Альбомы' />
         <Tab to='/artists' icon='User' label='Исполнители' />
         <Tab to='/playlists' icon='Playlist' label='Плейлисты' />
         <Tab to='/settings' icon='Settings' label='Настройки' className='mt-auto' />
       </nav>
       {pathname !== '/settings' && (
-        <div className='app-toolbar'>
-          <form className='app-search' role='search' onSubmit={(event) => { event.preventDefault(); search(query); }}
+        <div className='app-toolbar' onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest('button')) closePlayerVideo();
+        }}>
+          <form ref={searchForm} className='app-search' role='search' onSubmit={(event) => { event.preventDefault(); search(query); }}
             onFocusOut={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setShowHistory(false);
             }}

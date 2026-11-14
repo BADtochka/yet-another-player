@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -91,7 +91,8 @@ fn change_playlists(db: &mut Connection, change: Change) -> LibraryResult<Vec<Pl
         }
         Change::Remove { id, track_id } => {
             tx.execute(
-                "DELETE FROM playlist_track WHERE playlist_id = ?1 AND track_id = ?2",
+                "DELETE FROM playlist_track WHERE playlist_id = ?1 AND
+                 (track_id = ?2 OR track_id IN (SELECT variant_id FROM track_variant WHERE audio_id=?2))",
                 params![id, track_id],
             )?;
         }
@@ -100,6 +101,12 @@ fn change_playlists(db: &mut Connection, change: Change) -> LibraryResult<Vec<Pl
             track_id,
             later,
         } => {
+            let track_id = tx.query_row(
+                "SELECT track_id FROM playlist_track WHERE playlist_id=?1 AND
+                 (track_id=?2 OR track_id IN (SELECT variant_id FROM track_variant WHERE audio_id=?2))
+                 ORDER BY position LIMIT 1",
+                params![id, track_id], |row| row.get(0),
+            ).optional()?.unwrap_or(track_id);
             let ids = read_track_ids(&tx, id)?;
             if let Some(index) = ids.iter().position(|current| *current == track_id) {
                 let neighbor = if later {

@@ -8,7 +8,7 @@ use tokio::{
 };
 
 use super::{
-    downloads::ProcessTree, installed_yt_dlp, interrupted_launch, youtube_url, yt_dlp_command,
+    downloads::ProcessTree, installed_yt_dlp, interrupted_launch, source_video_url, yt_dlp_command,
     YtDlpError,
 };
 use crate::audio::{Action, AudioEngine, PreviewStartError};
@@ -28,7 +28,7 @@ pub(crate) async fn preview_yt_dlp(
         biased;
         _ = &mut cancelled => return Err(YtDlpError::PreviewCancelled),
         result = async {
-            let url = youtube_url(&video_id)?;
+            let url = source_video_url(&video_id)?;
             let path = installed_yt_dlp(&app).await?;
             download_preview(&path.path, &url).await
         } => result,

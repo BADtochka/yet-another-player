@@ -1,5 +1,5 @@
-import { useState } from 'preact/hooks';
-import { Link } from '@tanstack/react-router';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useLocation, useNavigate } from '@tanstack/react-router';
 import { QueuePanel } from '@/components/QueuePanel';
 import { SeekBar } from '@/components/SeekBar';
 import { SliderFrame } from '@/components/Slider';
@@ -7,12 +7,26 @@ import { TrackPlaying } from '@/components/TrackPlaying';
 import { VolumeBar } from '@/components/VolumeBar';
 import { Button } from '@/components/Button';
 import { Icon } from '@/components/Icons/Icon';
+import { useMusicDownload } from '@/utils/musicDownload';
+import { closePlayerVideo, showPlayerVideo, trackVideoId, usePlayerVideo, useVideoAvailable } from '@/utils/playerVideo';
+import { toast } from '@/utils/toast';
 import { usePlayerStore } from '@/stores';
 
 import { formatPlaybackTime } from '@/utils/formatPlaybackTime';
 
 export const PlayerControls = () => {
+  const { pathname, href } = useLocation();
+  const navigate = useNavigate();
+  const lyricsOpen = pathname === '/lyrics';
+  const previousPage = useRef('/tracks');
+  useEffect(() => {
+    if (!lyricsOpen && pathname !== '/setup') previousPage.current = href;
+  }, [lyricsOpen, pathname, href]);
+
   const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const videoAvailable = useVideoAvailable(currentTrack?.hasLocalVideo ? undefined : trackVideoId(currentTrack));
+  const videoOpen = usePlayerVideo((state) => !!state.request && state.request.path === currentTrack?.path);
+  const downloading = useMusicDownload((state) => !!state.active);
   const playing = usePlayerStore((state) => state.playing);
   const time = usePlayerStore((state) => state.currentTime);
   const setPlaying = usePlayerStore((state) => state.setPlaying);
@@ -28,10 +42,14 @@ export const PlayerControls = () => {
   const toggleShuffle = usePlayerStore((state) => state.toggleShuffle);
   const cycleRepeat = usePlayerStore((state) => state.cycleRepeat);
   const [queueOpen, setQueueOpen] = useState(false);
+  const queueTrigger = useRef<HTMLButtonElement>(null);
+  const closeQueue = useCallback(() => setQueueOpen(false), []);
   const repeatLabel = { off: 'Повтор выключен', all: 'Повтор очереди', one: 'Повтор трека' }[repeat];
   const sliderMax = Math.max(duration, 0.1);
   const displayTime = drag && drag.path === currentTrack?.path ? drag.position : time;
   const sliderValue = Math.min(displayTime, sliderMax);
+  const videoLabel = videoOpen ? 'Аудио' : 'Видео';
+  const lyricsLabel = lyricsOpen ? 'Закрыть текст песни' : 'Текст песни';
 
   return (
     <footer className='app-player' aria-label='Плеер'>
@@ -73,13 +91,18 @@ export const PlayerControls = () => {
         </SliderFrame>
       </div>
       <div className='player-tools'>
-        {currentTrack && <Link to='/lyrics' className='player-tool' aria-label='Текст песни' title='Текст песни'>
-          <Icon name='Lyrics' />
-        </Link>}
-        <Button variant='ghost' size='icon' className='player-tool' icon='Queue' aria-label='Очередь' title='Очередь'
-          aria-expanded={queueOpen} onClick={() => setQueueOpen(!queueOpen)} />
+        {currentTrack && (currentTrack.hasLocalVideo || videoAvailable || videoOpen) && <Button className='player-tool' variant='ghost' size='icon'
+          icon={videoOpen ? 'Melody' : 'Video'} aria-label={videoLabel} title={videoLabel} disabled={!videoOpen && downloading}
+          onClick={() => videoOpen ? closePlayerVideo()
+            : void showPlayerVideo(currentTrack).catch((error) => toast.error('Не удалось открыть видео', error))} />}
+        {currentTrack && <Button className='player-tool' variant='ghost' size='icon' icon='Lyrics'
+          aria-label={lyricsLabel} title={lyricsLabel} aria-expanded={lyricsOpen}
+          onClick={() => void (lyricsOpen ? navigate({ href: previousPage.current }) : navigate({ to: '/lyrics' }))} />}
+        <button ref={queueTrigger} type='button' className='player-tool' aria-label='Очередь' title='Очередь'
+          aria-expanded={queueOpen} aria-controls={queueOpen ? 'playback-queue' : undefined}
+          onClick={() => { closePlayerVideo(); setQueueOpen(!queueOpen); }}><Icon name='Queue' /></button>
         <VolumeBar className='player-volume' value={volume} onChange={setVolume} />
-        {queueOpen && <QueuePanel close={() => setQueueOpen(false)} />}
+        {queueOpen && <QueuePanel close={closeQueue} trigger={queueTrigger} />}
       </div>
     </footer>
   );

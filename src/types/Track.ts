@@ -7,6 +7,10 @@ export type Track = {
   lyrics: string[];
   path: string;
   album: string | null;
+  albumId: string;
+  externalVideoId?: string;
+  clipVideoId?: string;
+  hasLocalVideo?: boolean;
   albumArtist: string | null;
   discNumber: number | null;
   trackNumber: number | null;

@@ -1,6 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { invalidateCatalog } from '@/hooks/useLibrary';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { metadataResolverConfig, useSettingsStore } from '@/stores/settingsStore';
 import { logError, logWarn } from '@/utils/appLogs';
 import { registerMusicRoots } from '@/utils/musicFolders';
 
@@ -42,7 +42,8 @@ export const parseMusic = async ({ id = createScanId(), folders, onProgress }: S
     await registerMusicRoots(folders ?? registeredFolders);
     const progress = new Channel<TrackScanProgress>();
     progress.onmessage = (message) => onProgress?.(message);
-    const result = await invoke<ScanResult>('library_scan', { id, progress });
+    const resolver = metadataResolverConfig();
+    const result = await invoke<ScanResult>('library_scan', { id, progress, resolver });
 
     if (result.readWarnings.count > 0) {
       logWarn('Audio read warnings during library scan', result.readWarnings);

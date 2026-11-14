@@ -1,3 +1,4 @@
+import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { Button } from '@/components/Button';
@@ -35,6 +36,9 @@ export function CollectionCard({ item, kind, open }: { item: CollectionSummary; 
 function sortedCollections(items: CollectionSummary[], kind: CollectionKind, sort: LibrarySort) {
   return [...items].sort((a, b) => {
     const byName = catalogNames.compare(a.name, b.name);
+    if (sort === 'added' && kind === 'album') {
+      return (b.addedAt ?? 0) - (a.addedAt ?? 0) || (b.firstTrackId ?? 0) - (a.firstTrackId ?? 0) || byName;
+    }
     if (sort === 'releaseYear' && kind === 'album') return (b.year ?? 0) - (a.year ?? 0) || byName;
     if (sort === 'created' && kind === 'playlist') return catalogNames.compare(b.id, a.id);
     if (sort === 'artist' && kind === 'album') return catalogNames.compare(a.subtitle ?? '', b.subtitle ?? '') || byName;
@@ -83,7 +87,7 @@ export function CatalogCollectionPage({ kind, id, open }: {
   const error = collections?.error ?? detail?.error;
   if (error) return <p className='kit-message' role='alert'>{error}</p>;
   if (!collections?.data || (id !== undefined && !detail?.data)) {
-    return <p className='kit-message' role='status'>Загружаем медиатеку…</p>;
+    return <LoadingIndicator className='kit-message' label='Загрузка медиатеки' />;
   }
   const selected = collections.data.find((item) => item.id === id);
   const sorted = kind === 'album' && selected ? sortedCollections(collections.data, kind, sort) : [];

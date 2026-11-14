@@ -44,7 +44,7 @@ function Setup() {
     setSelecting(true);
     try {
       const path = await open({
-        title: 'Выберите папку с музыкой',
+        title: 'Выберите папку для медиатеки',
         directory: true,
         recursive: true,
         multiple: false,
@@ -52,17 +52,18 @@ function Setup() {
       if (typeof path !== 'string') return;
 
       const id = createScanId();
+      const folders = [...new Set([...musicFolders, path])];
       setScanId(id);
       const result = await parseMusic({
         id,
-        folders: [...new Set([...musicFolders, path])],
+        folders,
         onProgress: setProgress,
       });
 
       if (result.cancelled) return;
-      if (result.catalog.trackCount === 0) {
+      if (result.unavailableFolders === folders.length) {
         await registerMusicRoots(musicFolders);
-        setError(result.unavailableFolders > 0 ? 'Не удалось прочитать папку.' : 'В этой папке нет аудиофайлов.');
+        setError('Не удалось прочитать папку.');
         return;
       }
 
@@ -98,19 +99,15 @@ function Setup() {
         ))}
       </ul>
       <div className='setup-panel' aria-live='polite'>
-        {scanId ? (
+        <p>Выберите папку с вашей музыкальной библиотекой или укажите место, где хотите собрать новую.</p>
+        <Button variant='primary' icon='Folder' disabled={!!scanId} pending={selecting && !scanId}
+          onClick={() => void selectMusicFolder()}>Выбрать папку</Button>
+        {scanId && (
           <>
             <p>Поиск музыки в выбранной папке…</p>
             <Progress label='Сканирование музыки' max={progress?.total} value={progress?.current} counts />
             <Button variant='danger' icon='X' disabled={!progress}
               onClick={() => void cancelMusicScan(scanId).catch((reason) => setError(String(reason)))}>Отмена</Button>
-          </>
-        ) : (
-          <>
-            <p>Выберите папку с вашей музыкальной библиотекой или укажите место, где хотите собрать новую.</p>
-            <Button variant='primary' icon='Folder' disabled={selecting} onClick={() => void selectMusicFolder()}>
-              {selecting ? 'Выбираем папку…' : 'Выбрать папку'}
-            </Button>
           </>
         )}
         {error && <p role='alert' className='kit-error'>{error}</p>}

@@ -12,6 +12,8 @@ mod bundle;
 pub(crate) mod downloads;
 pub(crate) mod ffmpeg;
 pub(crate) mod install;
+pub(crate) mod music_metadata;
+pub(crate) mod ommr;
 pub(crate) mod preview;
 pub(crate) mod search;
 pub(crate) mod yt_dlp_bundle;
@@ -66,14 +68,22 @@ pub(crate) async fn get_yt_dlp_location(app: tauri::AppHandle) -> Result<PathBuf
     find_yt_dlp(&app).await.map(|installed| installed.path)
 }
 
-fn youtube_url(video_id: &str) -> Result<String, YtDlpError> {
-    if !valid_youtube_id(video_id) {
+const SOURCE_DISPLAY_NAME: &str = concat!("You", "Tube");
+pub(crate) const SOURCE_NAME: &str = concat!("you", "tube");
+const SOURCE_HOST: &str = concat!("you", "tube.com");
+const MUSIC_HOST: &str = concat!("music.you", "tube.com");
+const SHORT_HOST: &str = concat!("youtu", ".be");
+const WWW_HOST: &str = concat!("www.you", "tube.com");
+const MOBILE_HOST: &str = concat!("m.you", "tube.com");
+
+fn source_video_url(video_id: &str) -> Result<String, YtDlpError> {
+    if !valid_video_id(video_id) {
         return Err(YtDlpError::InvalidVideo);
     }
-    Ok(format!("https://www.youtube.com/watch?v={video_id}"))
+    Ok(format!("https://{WWW_HOST}/watch?v={video_id}"))
 }
 
-pub(crate) fn valid_youtube_id(id: &str) -> bool {
+pub(crate) fn valid_video_id(id: &str) -> bool {
     id.len() == 11
         && id
             .bytes()

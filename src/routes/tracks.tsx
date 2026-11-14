@@ -1,3 +1,4 @@
+import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useRef } from 'preact/hooks';
 import { Button } from '@/components/Button';
@@ -10,20 +11,23 @@ const Tracks = () => {
   const { layout, sort: preference } = useTrackViewStore();
   const sort = preference === 'releaseYear' || preference === 'created' ? 'name' : preference;
   const query = { sort, text: '' };
-  const { tracks, loading, error, hasMore, loadMore, retry } = useTrackPages(query);
+  const { tracks, loading, loadingMore, error, hasMore, loadMore, retry } = useTrackPages(query);
   const sentinel = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const target = sentinel.current;
-    if (!target || error) return;
+    if (!target || error || loading || loadingMore) return;
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry?.isIntersecting) loadMore();
+      if (entry?.isIntersecting) {
+        observer.disconnect();
+        loadMore();
+      }
     }, { rootMargin: '600px' });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [tracks, hasMore, error, sort]);
+  }, [tracks, hasMore, error, loading, loadingMore, sort]);
 
-  if (loading) return <p className='kit-message' role='status'>Загружаем треки…</p>;
+  if (loading && !tracks.length) return <LoadingIndicator className='kit-message' label='Загрузка треков' />;
   if (!tracks.length && !error) return <p className='kit-message'>В медиатеке пока нет треков.</p>;
 
   return (
@@ -34,6 +38,7 @@ const Tracks = () => {
       {error && <div className='col-span-full flex flex-wrap items-center gap-2' role='alert'>
         <span className='kit-error'>{error}</span><Button size='small' onClick={retry}>Повторить</Button>
       </div>}
+      {(loading || loadingMore) && <LoadingIndicator className='col-span-full kit-message' label='Загрузка треков' />}
       {hasMore && <div ref={sentinel} className='col-span-full h-8' aria-hidden='true' />}
     </div>
   );

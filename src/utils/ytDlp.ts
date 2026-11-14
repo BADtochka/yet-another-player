@@ -9,6 +9,7 @@ export type MusicSearchResult = {
   artist: string | null;
   duration: number | null;
   thumbnail: string | null;
+  videoAvailable?: boolean | null;
 };
 
 export const ytDlpFailureMessage = {
@@ -16,9 +17,9 @@ export const ytDlpFailureMessage = {
   timedOut: 'yt-dlp не ответил за 45 секунд. Попробуйте ещё раз.',
   gatekeeperBlocked: 'macOS заблокировала запуск yt-dlp.',
   launchFailed: 'Не удалось запустить yt-dlp. Попробуйте ещё раз или переустановите инструмент в настройках YAP.',
-  requestFailed: 'Не удалось получить результаты с YouTube. Попробуйте ещё раз.',
+  requestFailed: 'Не удалось получить результаты из внешних источников. Попробуйте ещё раз.',
   invalidQuery: 'Проверьте длину поискового запроса.',
-  invalidVideo: 'У этой карточки нет допустимого идентификатора YouTube.',
+  invalidVideo: 'У этой карточки нет допустимого идентификатора видео.',
   previewFailed: 'Не удалось подготовить аудио для предпросмотра.',
   previewCancelled: 'Предпросмотр отменён.',
   previewTooLarge: 'Аудио превышает лимит предпросмотра в 32 МБ.',
@@ -27,7 +28,7 @@ export const ytDlpFailureMessage = {
   downloadCancelled: 'Загрузка отменена.',
   downloadTimedOut: 'Загрузка не завершилась за отведённое время.',
   downloadFailed: 'yt-dlp не смог скачать аудио. Попробуйте ещё раз.',
-  ageRestricted: 'YouTube просит подтвердить возраст для этого видео.',
+  ageRestricted: 'Для этого видео источник требует входа и подтверждения возраста.',
   targetUnavailable: 'Выбранная папка медиатеки недоступна для записи.',
   importFailed: 'Не удалось добавить скачанный файл в медиатеку.',
   cleanupFailed: 'Не удалось полностью удалить временные файлы загрузки.',
@@ -107,7 +108,7 @@ export const runYtDlpSearch = async (query: string) => {
     return await invoke<MusicSearchResult[]>('search_yt_dlp', { query });
   } catch (error) {
     const state = handleYtDlpFailure(error);
-    throw new YtDlpError(state, state === 'timedOut' ? 'YouTube Music не ответил вовремя. Повторите поиск.' : undefined);
+    throw new YtDlpError(state, state === 'timedOut' ? 'Внешний поиск не ответил вовремя. Повторите поиск.' : undefined);
   }
 };
 
@@ -125,12 +126,13 @@ export const runYtDlpDownload = async (
   videoId: string,
   folderIndex: number,
   onProgress: (progress: MusicDownloadProgress) => void,
+  withVideo: boolean,
 ) => {
   const progress = new Channel<MusicDownloadProgress>();
   progress.onmessage = onProgress;
   try {
     return await invoke<{ track: Track; alreadyPresent: boolean }>('download_yt_dlp', {
-      id, videoId, folderIndex, progress,
+      id, videoId, folderIndex, progress, withVideo,
     });
   } catch (error) {
     throw new YtDlpError(handleYtDlpFailure(error));

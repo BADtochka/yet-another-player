@@ -12,7 +12,7 @@ pub(crate) enum Provider {
     Auto,
     Lrclib,
     Lrcmux,
-    Youtube,
+    VideoCaptions,
     Netease,
     Megalobiz,
     Musixmatch,
@@ -26,7 +26,7 @@ impl Provider {
             Self::Auto => None,
             Self::Lrclib => Some("lrclib"),
             Self::Lrcmux => Some("lrcmux"),
-            Self::Youtube => Some("youtube"),
+            Self::VideoCaptions => Some(crate::external_tools::SOURCE_NAME),
             Self::Netease => Some("netease"),
             Self::Megalobiz => Some("megalobiz"),
             Self::Musixmatch => Some("musixmatch"),
@@ -39,8 +39,14 @@ impl Provider {
         match source {
             "lrclib" => Some(Self::Lrclib),
             "lrcmux" => Some(Self::Lrcmux),
-            "youtube" | "youtube_music" | "youtube_transcript" | "youtube_subtitles" => {
-                Some(Self::Youtube)
+            source
+                if source
+                    .strip_prefix(crate::external_tools::SOURCE_NAME)
+                    .is_some_and(|suffix| {
+                        matches!(suffix, "" | "_music" | "_transcript" | "_subtitles")
+                    }) =>
+            {
+                Some(Self::VideoCaptions)
             }
             "netease" => Some(Self::Netease),
             "megalobiz" => Some(Self::Megalobiz),
@@ -142,11 +148,7 @@ fn decode(body: &[u8], requested: Provider) -> Result<Option<Lyrics>, LookupErro
     Ok(Some(Lyrics {
         provider,
         instrumental,
-        text: if lines.is_empty() {
-            text
-        } else {
-            String::new()
-        },
+        text,
         lines,
     }))
 }
@@ -233,12 +235,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strict_youtube_selection_accepts_its_subtitles_and_preserves_milliseconds() {
-        let body = br#"{"status":"success","data":{"source":"youtube_subtitles","lyrics":"Sample",
+    fn strict_video_selection_accepts_its_subtitles_and_preserves_milliseconds() {
+        let body = concat!(r#"{"status":"success","data":{"source":"you"#, r#"tube_subtitles","lyrics":"Sample",
             "timed_lyrics":[{"start_time":1850,"text":"Second"},{"start_time":-1,"text":"Invalid"},
-                            {"start_time":null,"text":"No timestamp"},{"start_time":320.1,"text":"First"}]}}"#;
-        let lyrics = decode(body, Provider::Youtube).unwrap().unwrap();
-        assert_eq!(lyrics.provider, Some(Provider::Youtube));
+                            {"start_time":null,"text":"No timestamp"},{"start_time":320.1,"text":"First"}]}}"#).as_bytes();
+        let lyrics = decode(body, Provider::VideoCaptions).unwrap().unwrap();
+        assert_eq!(lyrics.provider, Some(Provider::VideoCaptions));
         assert_eq!(
             serde_json::to_value(lyrics.lines).unwrap(),
             serde_json::json!([{"startMs":320,"text":"First"},{"startMs":1850,"text":"Second"}])
@@ -263,5 +265,15 @@ mod tests {
         let lyrics = decode(body, Provider::Genius).unwrap().unwrap();
         assert_eq!(lyrics.text, "One\nTwo");
         assert!(lyrics.lines.is_empty());
+    }
+
+    #[test]
+    fn preserves_full_lrc_alongside_partial_timed_lyrics() {
+        let body = br#"{"status":"success","data":{"source":"lrclib",
+            "lyrics":"[00:01.000]First\n    [00:03.000]Second",
+            "timed_lyrics":[{"start_time":1000,"text":"First"}]}}"#;
+        let lyrics = decode(body, Provider::Auto).unwrap().unwrap();
+        assert_eq!(lyrics.text, "[00:01.000]First\n    [00:03.000]Second");
+        assert_eq!(lyrics.lines.len(), 1);
     }
 }

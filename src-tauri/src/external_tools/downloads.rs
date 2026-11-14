@@ -24,11 +24,9 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{
-    ffmpeg, installed_yt_dlp, interrupted_launch, youtube_url, yt_dlp_command, YtDlpError,
-};
+use super::{installed_yt_dlp, interrupted_launch, source_video_url, yt_dlp_command, YtDlpError};
 use crate::{
-    library::{self, youtube, Library, Track},
+    library::{self, external, Library, Track},
     MusicFolders,
 };
 
@@ -157,9 +155,10 @@ pub(crate) async fn download_yt_dlp(
     id: String,
     video_id: String,
     folder_index: usize,
+    with_video: Option<bool>,
     progress: Channel<DownloadProgress>,
 ) -> Result<DownloadResult, YtDlpError> {
-    let url = youtube_url(&video_id)?;
+    let url = source_video_url(&video_id)?;
     let active = downloads.start(id)?;
     let _ = progress.send(DownloadProgress::Preparing);
     let existing = {
@@ -173,7 +172,7 @@ pub(crate) async fn download_yt_dlp(
         tauri::async_runtime::spawn_blocking(move || {
             let ids = [lookup_id];
             app.state::<Library>()
-                .active_youtube_tracks(&ids, &roots)
+                .active_external_tracks(&ids, &roots)
                 .map(|mut tracks| tracks.remove(&ids[0]))
         })
         .await
@@ -210,10 +209,6 @@ pub(crate) async fn download_yt_dlp(
     }
 
     let executable = installed_yt_dlp(&app).await?;
-    let ffmpeg = ffmpeg::installed(&app).await.unwrap_or_else(|error| {
-        eprintln!("FFmpeg: {error}");
-        None
-    });
     let stage = tempfile::Builder::new()
         .prefix(".yap-download-")
         .tempdir_in(&root)
@@ -222,17 +217,27 @@ pub(crate) async fn download_yt_dlp(
             YtDlpError::TargetUnavailable
         })?;
     let stage_path = stage.path().to_path_buf();
+    let ffmpeg = if with_video == Some(true) {
+        super::ffmpeg::installed(&app).await.ok().flatten()
+    } else {
+        None
+    };
+    let video_id_for_cache = video_id.clone();
+    let video_app = app.clone();
     let result = async {
-        let output = fetch_audio(
+        let output = fetch_media(
             &executable.path,
             &stage_path,
             &url,
-            ffmpeg.as_ref().map(|installed| installed.path.as_path()),
+            if with_video == Some(true) {
+                DownloadKind::Combined(ffmpeg.as_ref().map(|tool| tool.path.as_path()))
+            } else {
+                DownloadKind::Audio
+            },
             &active.job,
             &progress,
         )
         .await;
-        drop(ffmpeg);
         drop(executable);
         let output = output?;
         let _ = progress.send(DownloadProgress::WaitingForLibrary);
@@ -280,14 +285,114 @@ pub(crate) async fn download_yt_dlp(
             return Err(YtDlpError::CleanupFailed);
         }
     }
+    if with_video == Some(true) {
+        if let Ok(download) = &result {
+            if !download.already_present {
+                if Path::new(download.track.path())
+                    .extension()
+                    .is_some_and(|ext| ext == "mp4")
+                {
+                    if let Ok(destination) =
+                        video_destination(&video_app, &video_id_for_cache).await
+                    {
+                        if let Err(error) =
+                            tokio::fs::hard_link(download.track.path(), &destination).await
+                        {
+                            eprintln!("Video cache: {error}");
+                        }
+                    }
+                }
+            }
+        }
+    }
     result
 }
 
-async fn fetch_audio(
+const VIDEO_FORMAT: &str = "bestvideo[ext=mp4][vcodec^=avc1]/best[ext=mp4][vcodec^=avc1]";
+
+#[tauri::command]
+pub(crate) async fn external_video_available(
+    app: tauri::AppHandle,
+    video_id: String,
+) -> Result<bool, YtDlpError> {
+    let url = source_video_url(&video_id)?;
+    let executable = installed_yt_dlp(&app).await?;
+    super::search::is_playable_clip(&executable.path, &video_id, &url).await
+}
+
+async fn video_destination(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, YtDlpError> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| YtDlpError::TargetUnavailable)?
+        .join("videos");
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|_| YtDlpError::TargetUnavailable)?;
+    Ok(directory.join(format!("{id}.mp4")))
+}
+
+#[derive(Clone, Copy)]
+enum DownloadKind<'a> {
+    Audio,
+    Combined(Option<&'a Path>),
+    Video,
+}
+
+#[tauri::command]
+pub(crate) async fn download_yt_dlp_video(
+    app: tauri::AppHandle,
+    downloads: State<'_, Downloads>,
+    id: String,
+    video_id: String,
+    progress: Channel<DownloadProgress>,
+) -> Result<PathBuf, YtDlpError> {
+    let url = source_video_url(&video_id)?;
+    let destination = video_destination(&app, &video_id).await?;
+    let directory = destination.parent().ok_or(YtDlpError::TargetUnavailable)?;
+    if tokio::fs::symlink_metadata(&destination)
+        .await
+        .is_ok_and(|file| file.is_file() && file.len() > 0)
+    {
+        return Ok(destination);
+    }
+
+    let active = downloads.start(id)?;
+    let _ = progress.send(DownloadProgress::Preparing);
+    let executable = installed_yt_dlp(&app).await?;
+    let stage = tempfile::Builder::new()
+        .prefix(".yap-video-")
+        .tempdir_in(directory)
+        .map_err(|_| YtDlpError::TargetUnavailable)?;
+    let output = fetch_media(
+        &executable.path,
+        stage.path(),
+        &url,
+        DownloadKind::Video,
+        &active.job,
+        &progress,
+    )
+    .await?;
+    let output = stage.path().join(output);
+    if output.parent() != Some(stage.path())
+        || output.extension().and_then(|ext| ext.to_str()) != Some("mp4")
+        || !fs::symlink_metadata(&output).is_ok_and(|file| file.is_file() && file.len() > 0)
+    {
+        return Err(YtDlpError::DownloadFailed);
+    }
+    active.job.begin_import()?;
+    let _ = progress.send(DownloadProgress::Importing);
+    tokio::fs::rename(output, &destination)
+        .await
+        .map_err(|_| YtDlpError::ImportFailed)?;
+    Ok(destination)
+}
+
+async fn fetch_media(
     executable: &Path,
     stage: &Path,
     url: &str,
-    ffmpeg: Option<&Path>,
+    kind: DownloadKind<'_>,
     job: &Job,
     progress: &Channel<DownloadProgress>,
 ) -> Result<PathBuf, YtDlpError> {
@@ -325,6 +430,15 @@ async fn fetch_audio(
             "postprocess:YAP_PROCESSING",
             "--print",
             "after_move:YAP_FILE:%(filepath)j",
+        ]);
+    match kind {
+        DownloadKind::Audio | DownloadKind::Combined(_) => command.args([
+            "--format",
+            match kind {
+                DownloadKind::Combined(Some(_)) => "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio[ext=webm]",
+                DownloadKind::Combined(None) => "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio[ext=webm]",
+                _ => "bestaudio[ext~='^(m4a|webm|opus|ogg|mp3|flac|wav)$']/best[ext=mp4][acodec^=mp4a]",
+            },
             "--write-info-json",
             "--no-embed-info-json",
             "--write-thumbnail",
@@ -334,24 +448,19 @@ async fn fetch_audio(
             "thumbnail:cover.%(ext)s",
             "--output",
             "%(title).160B [%(id)s].%(ext)s",
-        ]);
-    if let Some(ffmpeg) = ffmpeg {
-        command
-            .args([
-                "--extract-audio",
-                "--audio-format",
-                "mp3",
-                "--audio-quality",
-                "0",
-                "--add-metadata",
-                "--ffmpeg-location",
-            ])
-            .arg(ffmpeg);
-    } else {
-        command.args([
+        ]),
+        DownloadKind::Video => command.args([
             "--format",
-            "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        ]);
+            VIDEO_FORMAT,
+            "--output",
+            "video.%(ext)s",
+        ]),
+    };
+    if let DownloadKind::Combined(Some(ffmpeg)) = kind {
+        command
+            .arg("--ffmpeg-location")
+            .arg(ffmpeg)
+            .args(["--merge-output-format", "mp4"]);
     }
     command.args(["--", url]);
 
@@ -477,7 +586,7 @@ fn publish_audio(
     let legacy_path = stem
         .ends_with(&suffix)
         .then(|| root.join(format!("{stem}.{extension}")));
-    let known = library.youtube_paths(video_id).map_err(|error| {
+    let known = library.external_paths(video_id).map_err(|error| {
         eprintln!("yt-dlp catalog lookup: {error}");
         YtDlpError::ImportFailed
     })?;
@@ -496,7 +605,7 @@ fn publish_audio(
     match library.index_download(
         &destination,
         roots,
-        youtube::Download {
+        external::Download {
             video_id,
             tags: &tags,
             cover: cover.as_deref(),
@@ -553,7 +662,7 @@ fn read_sidecar(path: &Path, limit: u64) -> Option<Vec<u8>> {
     (data.len() as u64 <= limit).then_some(data)
 }
 
-fn source_tags(stage: &Path, video_id: &str, fallback: &str) -> youtube::DownloadTags {
+fn source_tags(stage: &Path, video_id: &str, fallback: &str) -> external::DownloadTags {
     let info = read_sidecar(&stage.join(INFO_FILE), 4 * 1024 * 1024)
         .and_then(|bytes| serde_json::from_slice::<SourceInfo>(&bytes).ok())
         .filter(|info| info.id == video_id)
@@ -565,24 +674,31 @@ fn source_tags(stage: &Path, video_id: &str, fallback: &str) -> youtube::Downloa
         .filter_map(|name| nonempty(Some(name)))
         .collect::<Vec<_>>();
     if artists.is_empty() {
-        let channel = nonempty(info.uploader)
-            .or_else(|| nonempty(info.channel))
-            .map(|name| {
-                name.strip_suffix(" - Topic")
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(&name)
-                    .to_owned()
-            });
-        artists.extend(
-            nonempty(info.artist)
-                .or_else(|| nonempty(info.creator))
-                .or(channel),
-        );
+        if let Some(credit) = nonempty(info.artist).or_else(|| nonempty(info.creator)) {
+            artists.extend(super::music_metadata::split_credits(&credit).map(str::to_owned));
+        }
     }
-    youtube::DownloadTags {
-        title: nonempty(info.track)
-            .or_else(|| nonempty(info.title))
-            .unwrap_or_else(|| fallback.to_owned()),
+    let is_clip = info
+        .title
+        .as_deref()
+        .is_some_and(super::music_metadata::has_clip_label);
+    let title = nonempty(info.track)
+        .or_else(|| nonempty(info.title))
+        .unwrap_or_else(|| fallback.to_owned());
+    let title = super::music_metadata::normalize(&title, &mut artists);
+    if artists.is_empty() {
+        if let Some(channel) = nonempty(info.uploader).or_else(|| nonempty(info.channel)) {
+            artists.push(
+                channel
+                    .strip_suffix(" - Topic")
+                    .unwrap_or(&channel)
+                    .to_owned(),
+            );
+        }
+    }
+    external::DownloadTags {
+        title,
+        is_clip,
         artists,
         album: nonempty(info.album),
         album_artist: nonempty(info.album_artist),
@@ -619,7 +735,7 @@ fn file_stem(title: &str) -> String {
     }
     let name = name.trim_matches([' ', '.']);
     if name.is_empty() {
-        return "YouTube".to_owned();
+        return "Аудиотрек".to_owned();
     }
     let prefix = name
         .split('.')
@@ -673,7 +789,7 @@ fn publish_unique(
 fn write_file_tags(
     path: &Path,
     extension: &str,
-    tags: &youtube::DownloadTags,
+    tags: &external::DownloadTags,
     cover: Option<&[u8]>,
 ) {
     // WebM and other files still get the same metadata and cover through the catalog.
@@ -849,7 +965,7 @@ mod tests {
     const WAV: &[u8] = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\x02\0\0\0\0\0";
 
     #[test]
-    fn youtube_webp_can_be_embedded_as_a_jpeg_cover() {
+    fn external_webp_can_be_embedded_as_a_jpeg_cover() {
         let mut webp = Vec::new();
         image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
             .encode(&[16, 64, 128, 255], 1, 1, image::ExtendedColorType::Rgba8)
@@ -889,7 +1005,7 @@ mod tests {
         assert_eq!(first["album"], "Album");
         assert_eq!(first["year"], 2025);
         assert_eq!(
-            library.youtube_cover(&destination).as_deref(),
+            library.external_cover(&destination).as_deref(),
             Some(artwork.as_slice())
         );
 
@@ -904,18 +1020,21 @@ mod tests {
             b"unrelated local file"
         );
         assert_eq!(
-            library.youtube_cover(&destination).as_deref(),
+            library.external_cover(&destination).as_deref(),
             Some(artwork.as_slice())
         );
         let ids = [video_id.to_owned()];
         let linked = library
-            .active_youtube_tracks(&ids, std::slice::from_ref(&root))
+            .active_external_tracks(&ids, std::slice::from_ref(&root))
             .unwrap();
         assert_eq!(serde_json::to_value(&linked[video_id]).unwrap(), first);
-        assert!(library.active_youtube_tracks(&ids, &[]).unwrap().is_empty());
+        assert!(library
+            .active_external_tracks(&ids, &[])
+            .unwrap()
+            .is_empty());
         fs::remove_file(&destination).unwrap();
         assert!(library
-            .active_youtube_tracks(&ids, &[root])
+            .active_external_tracks(&ids, &[root])
             .unwrap()
             .is_empty());
     }
@@ -962,11 +1081,11 @@ mod tests {
             assert!(state.cancel("test-job"));
         };
         let (result, ()) = tokio::join!(
-            fetch_audio(
+            fetch_media(
                 &executable,
                 stage.path(),
                 "https://example.invalid",
-                None,
+                DownloadKind::Audio,
                 &active.job,
                 &progress
             ),

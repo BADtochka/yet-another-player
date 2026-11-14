@@ -1,11 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { SwitchSettings } from '@/components/Settings/SwitchSettings';
 import { SettingsSection } from '@/components/Settings/SettingsSection';
+import { MetadataSettings } from '@/components/Settings/MetadataSettings';
+import { useMetadataLookup } from '@/hooks/useLibrary';
+import { useSettingsStore } from '@/stores';
 import { GeniusSettings } from '@/components/Settings/GeniusSettings';
 import { Dialog } from '@/components/Dialog';
 import { Button } from '@/components/Button';
 import { Icon } from '@/components/Icons/Icon';
+import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { Progress } from '@/components/Progress';
 import { YtDlpChecking } from '@/components/YtDlpFeedback';
 import {
@@ -26,13 +31,18 @@ const TOOLS: Array<{ tool: ExternalTool; title: string; description: string }> =
     description: 'Поиск и скачивание музыки из внешних источников',
   },
   {
+    tool: 'ommr',
+    title: 'OMMR',
+    description: 'Поиск недостающих метаданных при сканировании медиатеки',
+  },
+  {
     tool: 'ffmpeg',
     title: 'ffmpeg',
     description: 'Конвертация аудио, метаданных и обработка скачанной музыки',
   },
 ];
 
-const toolPages = { 'yt-dlp': 'https://github.com/yt-dlp/yt-dlp', ffmpeg: 'https://ffmpeg.org/' };
+const toolPages = { 'yt-dlp': 'https://github.com/yt-dlp/yt-dlp', ffmpeg: 'https://ffmpeg.org/', ommr: 'https://github.com/Wilooper/OpenMusicMetadataResolver-OMMR' };
 const ytDlpDate = (version: string | null | undefined) => version?.match(/^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?(?=$|\s)/)?.[0];
 
 let latestVersion: Promise<string> | undefined;
@@ -60,12 +70,21 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
   const [latest, setLatest] = useState<string>();
   const job = useToolInstalls((state) => state[tool]);
   const progress = job?.progress;
+  const [configure, setConfigure] = useState(false);
+  const resolving = useMetadataLookup((state) => tool === 'ommr' && state.running);
+  const resolverMode = useSettingsStore((state) => tool === 'ommr'
+    ? state.resolverMode ?? (state.resolverUrl ? 'remote' : 'off')
+    : undefined);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string>();
+  const [checkingStatus, setCheckingStatus] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const isChecking = useYtDlpStatus((state) => tool === 'yt-dlp' && state.checking);
 
   const progressText = useMemo(() => {
+    if (progress?.status === 'building') return 'Сборка OMMR…';
+    if (progress?.status === 'checking' && tool === 'ommr') return 'Проверка запуска OMMR…';
     if (progress?.status === 'extracting') return 'Распаковка…';
     if (progress?.status === 'checking' && tool === 'ffmpeg') return 'Проверка запуска…';
     if (progress?.status === 'waitingForDownload') return 'Ждём окончания работы инструмента…';
@@ -85,6 +104,7 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
   useEffect(() => {
     if (job) return;
     let isMounted = true;
+    setCheckingStatus(true);
 
     getExternalToolStatus(tool)
       .then((nextStatus) => {
@@ -96,7 +116,7 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
         if (isMounted) {
           setError(statusError instanceof Error ? statusError.message : String(statusError));
         }
-      });
+      }).finally(() => { if (isMounted) setCheckingStatus(false); });
 
     return () => {
       isMounted = false;
@@ -114,34 +134,44 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
     setError(null);
     try {
       setStatus(await installExternalTool(tool));
+      if (tool === 'ommr') {
+        const { resolverMode, resolverUrl, resolverSources, setResolver } = useSettingsStore.getState();
+        if (resolverMode === undefined && !resolverUrl) {
+          setResolver({ resolverMode: 'local', resolverUrl, resolverSources });
+        }
+      }
     } catch (reason) {
       if (reason !== 'installCancelled') setError(String(reason));
     }
   };
 
   const retryCheck = async () => {
+    setCheckingStatus(true);
     setError(null);
     try {
       setStatus(await getExternalToolStatus(tool, true));
     } catch (reason) {
       setError(String(reason));
+    } finally {
+      setCheckingStatus(false);
     }
   };
 
   const onRemove = async () => {
     setRemoving(true);
-    setError(null);
+    setRemoveError(undefined);
     try {
       setStatus(await removeExternalTool(tool));
+      setError(null);
       setConfirmRemove(false);
     } catch (reason) {
-      setError(String(reason));
+      setRemoveError(String(reason));
     } finally {
       setRemoving(false);
     }
   };
 
-  const busy = !!job || isChecking || removing;
+  const busy = !!job || isChecking || checkingStatus || removing;
   const version = status?.version?.split('\n')[0];
   const currentDate = ytDlpDate(version);
   const newer = tool === 'yt-dlp' && currentDate && latest && latest.localeCompare(currentDate, 'en', { numeric: true }) > 0;
@@ -154,14 +184,17 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
               onClick={() => void openUrl(toolPages[tool]).catch((reason) => setError(String(reason)))}>
               {title} <Icon name='Open' size={16} />
             </button>
-            {version && !job && <span className='settings-version'>
+            {version && <span className='settings-version'>
               {version}{newer ? ` → ${latest}` : ''}
             </span>}
           </h3>
           <p>{description}</p>
+          {resolverMode && <p className='settings-version'>
+            {resolverMode === 'local' ? 'Локальный сервер' : resolverMode === 'remote' ? 'Внешний сервер' : 'Выключен'}
+          </p>}
         </div>
         <div className='settings-row-actions'>
-          {job ? (
+          {job && (
             <>
               <div className='settings-install-progress' aria-live='polite'>
                 <p>{job.cancelling ? 'Отменяем установку…' : isChecking ? 'Проверяем запуск yt-dlp…' : progressText ?? 'Установка инструмента'}</p>
@@ -172,48 +205,51 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
                 disabled={job.cancelling || progress?.status === 'publishing' || progress?.status === 'installed' || isChecking}
                 onClick={() => void cancelExternalToolInstall(tool).catch((reason) => setError(String(reason)))} />
             </>
-          ) : (
-            <>
-              {isChecking && <YtDlpChecking />}
-              {status?.launchError && !busy && <Button size='small' icon='Refresh' onClick={() => void retryCheck()}>Проверить снова</Button>}
-              {status?.installed && !newer && !status.launchError ? (
-                <>
-                  <span className='settings-installed'><Icon name='Check' />Установлено</span>
-                  <Button size='icon' icon='Refresh' disabled={busy} aria-label={`Переустановить ${title}`} onClick={() => void onInstall()} />
-                </>
-              ) : (
-                <Button variant='primary' icon='Install' data-update={newer ? 'true' : undefined}
-                  disabled={busy || (!status && !error)} onClick={() => void onInstall()}>
-                  {newer ? 'Доступно обновление' : status?.installed ? 'Переустановить' : 'Установить'}
-                </Button>
-              )}
-              {status?.installed && <Button size='icon' className='settings-folder-remove' icon='Trash' disabled={busy}
-                aria-label={`Удалить ${title}`} onClick={() => { setError(null); setConfirmRemove(true); }} />}
-            </>
           )}
+          {resolving && <LoadingIndicator label='Поиск метаданных в OMMR' />}
+          {tool === 'ommr' && <Button size='icon' icon='Settings' disabled={busy}
+            aria-label='Настроить OMMR' title='Настроить OMMR' onClick={() => setConfigure(true)} />}
+          {!job && (isChecking ? <YtDlpChecking /> : checkingStatus && <LoadingIndicator label={`Проверка ${title}`} />)}
+          {status?.launchError && <Button size='small' icon='Refresh' disabled={busy} onClick={() => void retryCheck()}>Проверить снова</Button>}
+          {status?.installed && !newer && !status.launchError ? (
+            <Button size='icon' icon='Refresh' disabled={busy} aria-label={`Переустановить ${title}`} onClick={() => void onInstall()} />
+          ) : (
+            <Button variant='primary' icon='Install' data-update={newer ? 'true' : undefined}
+              disabled={busy || (!status && !error)} onClick={() => void onInstall()}>
+              {newer ? 'Доступно обновление' : status?.installed ? 'Переустановить' : 'Установить'}
+            </Button>
+          )}
+          {status?.installed && <Button size='icon' className='settings-folder-remove' icon='Trash' disabled={busy}
+            aria-label={`Удалить ${title}`} onClick={() => { setRemoveError(undefined); setConfirmRemove(true); }} />}
         </div>
       </div>
-      {!confirmRemove && (error || (!busy && status?.launchError)) && (
+      {(error || status?.launchError) && (
         <p className='kit-error' role='alert'>{error || status?.launchError}</p>
       )}
+      {configure && <MetadataSettings installed={!!status?.installed} onDismiss={() => setConfigure(false)} />}
       <Dialog open={confirmRemove} title={`Удалить ${title}?`} busy={removing} onDismiss={() => setConfirmRemove(false)}
         description='Инструмент можно будет установить снова из настроек.'>
-        {error && <p className='kit-error' role='alert'>{error}</p>}
+        {removeError && <p className='kit-error' role='alert'>{removeError}</p>}
         <div className='kit-dialog-actions'>
           <Button disabled={removing} onClick={() => setConfirmRemove(false)}>Отмена</Button>
-          <Button variant='danger' icon='Trash' disabled={removing} onClick={() => void onRemove()}>Удалить</Button>
+          <Button variant='danger' icon='Trash' pending={removing} onClick={() => void onRemove()}>Удалить</Button>
         </div>
       </Dialog>
     </div>
   );
 };
 
-export const ExternalToolsSettings = () => (
-  <SettingsSection title='Внешние инструменты'
-    description='Инструменты для декодирования, скачивания и получения метаданных треков'>
-    <div className='settings-rows'>
-      {TOOLS.map((tool) => <ExternalToolRow key={tool.tool} {...tool} />)}
-      <GeniusSettings />
-    </div>
-  </SettingsSection>
-);
+export const ExternalToolsSettings = () => {
+  const lyricaEnabled = useSettingsStore((state) => state.lyricaEnabled);
+  const setLyricaEnabled = useSettingsStore((state) => state.setLyricaEnabled);
+  return (
+    <SettingsSection title='Внешние инструменты'
+      description='Инструменты для декодирования, скачивания и получения метаданных треков'>
+      <div className='settings-rows'>
+        {TOOLS.map((tool) => <ExternalToolRow key={tool.tool} {...tool} />)}
+        <SwitchSettings label='Lyrica · онлайн-поиск текста' checked={lyricaEnabled} onChange={setLyricaEnabled} />
+        <GeniusSettings />
+      </div>
+    </SettingsSection>
+  );
+};

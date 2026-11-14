@@ -3,6 +3,8 @@ import { createTauriStore } from '@tauri-store/zustand';
 import { create } from 'zustand';
 
 type SettingsState = Settings & {
+  setLyricaEnabled: (enabled: boolean) => void;
+  setResolver: (config: Pick<Settings, 'resolverMode' | 'resolverUrl' | 'resolverSources'>) => void;
   addMusicFolder: (path: string) => void;
   removeMusicFolder: (path: string) => void;
   setMusicFolders: (folders: string[]) => void;
@@ -28,6 +30,11 @@ const normalizeFolders = (folders: string[]) => {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   musicFolders: [],
+  lyricaEnabled: false,
+  setLyricaEnabled: (lyricaEnabled) => set({ lyricaEnabled }),
+  resolverUrl: '',
+  resolverSources: [],
+  setResolver: (config) => set({ ...config, resolverUrl: config.resolverUrl.trim() }),
   volumeNormEnabled: false,
   volumeNormLevel: 'normal',
   addMusicFolder: (path) => {
@@ -52,6 +59,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
 export const settingsStoreHandler = createTauriStore('settings', useSettingsStore, {
   saveOnChange: true,
-  filterKeys: ['musicFolders', 'volumeNormLevel', 'volumeNormEnabled'],
+  filterKeys: ['lyricaEnabled', 'musicFolders', 'volumeNormLevel', 'volumeNormEnabled', 'resolverUrl', 'resolverMode', 'resolverSources'],
   filterKeysStrategy: 'pick',
 });
+
+export const metadataResolverConfig = () => {
+  const { resolverMode, resolverUrl, resolverSources } = useSettingsStore.getState();
+  return { mode: resolverMode ?? (resolverUrl ? 'remote' : 'off'), url: resolverUrl || null, sources: resolverSources };
+};

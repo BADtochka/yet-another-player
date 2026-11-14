@@ -3,7 +3,7 @@ use std::{future::Future, sync::Mutex};
 use serde::Deserialize;
 use tokio::sync::watch;
 
-use super::{ffmpeg, yt_dlp_bundle};
+use super::{ffmpeg, ommr, yt_dlp_bundle};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -92,6 +92,7 @@ impl Drop for Installation<'_> {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Tool {
     Ffmpeg,
+    Ommr,
     #[serde(rename = "yt-dlp")]
     YtDlp,
 }
@@ -100,6 +101,7 @@ pub(crate) enum Tool {
 pub(crate) fn cancel_tool_install(tool: Tool, id: String) -> bool {
     match tool {
         Tool::Ffmpeg => ffmpeg::INSTALLER.cancel(&id),
+        Tool::Ommr => ommr::INSTALLER.cancel(&id),
         Tool::YtDlp => yt_dlp_bundle::INSTALLER.cancel(&id),
     }
 }
@@ -108,6 +110,7 @@ pub(crate) fn cancel_tool_install(tool: Tool, id: String) -> bool {
 pub(crate) async fn remove_external_tool(app: tauri::AppHandle, tool: Tool) -> Result<(), String> {
     match tool {
         Tool::Ffmpeg => ffmpeg::remove(&app).await,
+        Tool::Ommr => ommr::remove(&app).await,
         Tool::YtDlp => yt_dlp_bundle::remove(&app).await,
     }
 }

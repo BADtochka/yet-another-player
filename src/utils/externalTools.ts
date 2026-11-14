@@ -3,7 +3,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { logError, logInfo } from '@/utils/appLogs';
 import { checkYtDlp, clearYtDlpCheck, getYtDlpLocation, YtDlpError, ytDlpFailureMessage } from '@/utils/ytDlp';
 
-export type ExternalTool = 'yt-dlp' | 'ffmpeg';
+export type ExternalTool = 'yt-dlp' | 'ffmpeg' | 'ommr';
 
 export type ExternalToolStatus = {
   tool: ExternalTool;
@@ -15,7 +15,7 @@ export type ExternalToolStatus = {
 
 export type ExternalToolInstallProgress = {
   tool: ExternalTool;
-  status: 'downloading' | 'extracting' | 'checking' | 'waitingForDownload' | 'publishing' | 'installed';
+  status: 'downloading' | 'extracting' | 'building' | 'checking' | 'waitingForDownload' | 'publishing' | 'installed';
   downloaded: number;
   total: number | null;
 };
@@ -46,7 +46,7 @@ const getYtDlpStatus = async (fresh = false): Promise<ExternalToolStatus> => {
 
 export const getExternalToolStatus = async (tool: ExternalTool, fresh = false): Promise<ExternalToolStatus> => {
   if (tool === 'yt-dlp') return getYtDlpStatus(fresh);
-  return { tool, ...await invoke<FfmpegStatus>('check_ffmpeg') };
+  return { tool, ...await invoke<FfmpegStatus>(tool === 'ommr' ? 'check_ommr' : 'check_ffmpeg') };
 };
 
 type ToolInstall = { id: string; progress?: ExternalToolInstallProgress; cancelling: boolean };
@@ -67,7 +67,7 @@ export async function installExternalTool(tool: ExternalTool): Promise<ExternalT
 
   logInfo('Installing external tool', { tool });
   try {
-    if (tool === 'ffmpeg') return { tool, ...await invoke<FfmpegStatus>('install_ffmpeg', { id, onProgress: progress }) };
+    if (tool !== 'yt-dlp') return { tool, ...await invoke<FfmpegStatus>(tool === 'ommr' ? 'install_ommr' : 'install_ffmpeg', { id, onProgress: progress }) };
     const bundle = await invoke<BundleProgress>('install_yt_dlp_bundle', { id, onProgress: progress });
     progress.onmessage({ ...bundle, status: 'checking' });
     const status = await getYtDlpStatus(true);

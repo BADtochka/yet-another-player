@@ -1,3 +1,4 @@
+import { trackVideoId } from '@/utils/playerVideo';
 import { useRef } from 'preact/hooks';
 import { MediaCard } from '@/components/MediaCard';
 import { usePlayerStore } from '@/stores';
@@ -17,7 +18,7 @@ export function Track({ track, onPlay, disabled }: {
   const { coverSrc, clearCover } = useTrackCover(visible ? track.path : undefined);
 
   return (
-    <MediaCard buttonRef={ref} title={track.name} subtitle={track.artists.join(', ') || 'Неизвестный исполнитель'}
+    <MediaCard data-track-path={track.path} data-external-video={trackVideoId(track)} data-local-video={track?.hasLocalVideo || undefined} buttonRef={ref} title={track.name} subtitle={track.artists.join(', ') || 'Неизвестный исполнитель'}
       metadata={track.duration && track.duration > 0 && Number.isFinite(track.duration) ? formatPlaybackTime(track.duration) : undefined}
       icon='Track' coverSrc={coverSrc} onCoverError={clearCover} aria-current={selected ? 'true' : undefined}
       disabled={disabled} onClick={() => onPlay(track)} />

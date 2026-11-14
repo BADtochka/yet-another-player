@@ -13,6 +13,7 @@ mod genius;
 mod library;
 mod linux_audio;
 mod lyrica;
+mod track_lyrics;
 mod updates;
 
 pub struct MusicFolders {
@@ -70,9 +71,16 @@ async fn get_cover(
         if !path.is_file() || !roots.lock().ok()?.iter().any(|root| path.starts_with(root)) {
             return None;
         }
-        app.state::<library::Library>()
-            .youtube_cover(&path)
-            .or_else(|| cover::load_cover(&path, &cache).map(|(bytes, _)| bytes))
+        cover::load_cover(&path, &cache)
+            .map(|(bytes, _)| bytes)
+            .or_else(|| {
+                let library = app.state::<library::Library>();
+                library
+                    .resolver_cover(&path)
+                    .is_none()
+                    .then(|| library.external_cover(&path))
+                    .flatten()
+            })
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -80,33 +88,126 @@ async fn get_cover(
 }
 
 #[tauri::command]
-async fn get_lyrics(
+async fn reveal_track(folders: State<'_, MusicFolders>, path: String) -> Result<(), String> {
+    let roots = Arc::clone(&folders.canonical);
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = audio::library_track_path(&path, &roots)?;
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn local_track_video(
+    app: tauri::AppHandle,
+    folders: State<'_, MusicFolders>,
+    path: String,
+) -> Result<Option<PathBuf>, String> {
+    let roots = Arc::clone(&folders.canonical);
+    tauri::async_runtime::spawn_blocking(move || {
+        let audio_path = audio::library_track_path(&path, &roots)?;
+        let library = app.state::<library::Library>();
+        let Some(path) = library
+            .local_video(&audio_path)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let path = audio::library_track_path(&path, &roots)?;
+        if !library::versions::has_video(&path) {
+            return Ok(None);
+        }
+        let scope = app.asset_protocol_scope();
+        scope.allow_file(&path).map_err(|error| error.to_string())?;
+        Ok(Some(path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackFileInfo {
+    size: u64,
+    format: String,
+}
+
+#[tauri::command]
+async fn track_file_info(
+    folders: State<'_, MusicFolders>,
+    path: String,
+) -> Result<TrackFileInfo, String> {
+    let roots = Arc::clone(&folders.canonical);
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = audio::library_track_path(&path, &roots)?;
+        let size = path.metadata().map_err(|error| error.to_string())?.len();
+        let format = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_uppercase();
+        Ok(TrackFileInfo { size, format })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn get_resolver_cover(
+    app: tauri::AppHandle,
     folders: State<'_, MusicFolders>,
     path: String,
 ) -> Result<Option<String>, String> {
     let roots = Arc::clone(&folders.canonical);
     tauri::async_runtime::spawn_blocking(move || {
-        let track = std::fs::canonicalize(path).ok()?;
-        let lyrics = std::fs::canonicalize(track.with_extension("lrc")).ok()?;
-        let roots = roots.lock().ok()?;
-        if !roots
-            .iter()
-            .any(|root| track.starts_with(root) && lyrics.starts_with(root))
-        {
-            return None;
-        }
-        drop(roots);
-        let file = std::fs::File::open(lyrics).ok()?;
-        if !file.metadata().ok()?.is_file() {
-            return None;
-        }
-        let mut text = String::new();
-        use std::io::Read;
-        file.take(256 * 1024 + 1).read_to_string(&mut text).ok()?;
-        (text.len() <= 256 * 1024).then_some(text)
+        let path = audio::library_track_path(&path, &roots)?;
+        Ok(app.state::<library::Library>().resolver_cover(&path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn get_lyrics(
+    folders: State<'_, MusicFolders>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Option<LocalLyrics>, String> {
+    let roots = Arc::clone(&folders.canonical);
+    tauri::async_runtime::spawn_blocking(move || {
+        let track = audio::library_track_path(&path, &roots).ok()?;
+        let local = (|| {
+            let lyrics = std::fs::canonicalize(track.with_extension("lrc")).ok()?;
+            if !lyrics.is_file()
+                || !roots
+                    .lock()
+                    .ok()?
+                    .iter()
+                    .any(|root| track.starts_with(root) && lyrics.starts_with(root))
+            {
+                return None;
+            }
+            let file = std::fs::File::open(lyrics).ok()?;
+            let mut text = String::new();
+            use std::io::Read;
+            file.take(256 * 1024 + 1).read_to_string(&mut text).ok()?;
+            (text.len() <= 256 * 1024 && !text.trim().is_empty()).then_some(text)
+        })();
+        let fetched = app.state::<library::Library>().fetched_lyrics(&track);
+        Some(LocalLyrics {
+            sidecar: local,
+            fetched,
+        })
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct LocalLyrics {
+    sidecar: Option<String>,
+    fetched: Option<String>,
 }
 
 #[tauri::command]
@@ -150,6 +251,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(audio_environment)
+        .manage(external_tools::ommr::LocalServer::default())
         .manage(external_tools::downloads::Downloads::default())
         .manage(MusicFolders {
             canonical: Arc::clone(&roots),
@@ -178,6 +280,9 @@ pub fn run() {
             external_tools::get_yt_dlp_location,
             external_tools::yt_dlp_bundle::install_yt_dlp_bundle,
             external_tools::yt_dlp_bundle::latest_yt_dlp_version,
+            external_tools::ommr::check_ommr,
+            external_tools::ommr::install_ommr,
+            external_tools::ommr::test_ommr,
             external_tools::ffmpeg::check_ffmpeg,
             external_tools::ffmpeg::install_ffmpeg,
             external_tools::install::cancel_tool_install,
@@ -186,10 +291,17 @@ pub fn run() {
             external_tools::preview::preview_yt_dlp,
             external_tools::search::search_yt_dlp,
             external_tools::downloads::download_yt_dlp,
+            external_tools::downloads::download_yt_dlp_video,
+            external_tools::downloads::external_video_available,
             external_tools::downloads::cancel_yt_dlp_download,
             get_audio_environment,
             get_cover,
+            get_resolver_cover,
+            local_track_video,
             get_lyrics,
+            reveal_track,
+            track_file_info,
+            track_lyrics::save_track_lyrics,
             lyrica::lookup_lyrica_lyrics,
             genius::genius_is_configured,
             genius::genius_save_token,
@@ -199,15 +311,21 @@ pub fn run() {
             library::queries::library_tracks_page,
             library::queries::library_play_tracks,
             library::queries::library_tracks_by_paths,
-            library::youtube::library_youtube_tracks,
+            library::external::library_external_tracks,
             library::queries::library_collections,
             library::queries::library_collection_tracks,
             library::playlists::library_playlists,
             library::library_scan,
+            library::library_enrich_download,
             library::library_cancel,
             library::library_resolve_path,
             set_music_roots,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<external_tools::ommr::LocalServer>().shutdown();
+            }
+        });
 }

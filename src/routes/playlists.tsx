@@ -1,3 +1,4 @@
+import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
@@ -20,6 +21,7 @@ type Editor = 'create' | 'rename' | 'delete' | 'add';
 function Playlists() {
   const playlists = usePlaylistStore((state) => state.playlists);
   const [error, setError] = useState('');
+  const [editorError, setEditorError] = useState('');
   const [editor, setEditor] = useState<Editor>();
   const [name, setName] = useState('');
   const [query, setQuery] = useState('');
@@ -42,19 +44,20 @@ function Playlists() {
     : undefined;
 
   const showEditor = (mode: Editor) => {
-    setError('');
+    setEditorError('');
     setName(mode === 'rename' ? playlist?.name ?? '' : '');
     setQuery('');
     setEditor(mode);
   };
 
   const run = async (operation: () => Promise<void>) => {
+    const report = editor ? setEditorError : setError;
     setBusy(true);
-    setError('');
+    report('');
     try {
       await operation();
     } catch (error) {
-      setError(String(error));
+      report(String(error));
     } finally {
       setBusy(false);
     }
@@ -87,9 +90,10 @@ function Playlists() {
           back={() => open()}
           actions={
             <>
-              <Button size='small' onClick={() => showEditor('add')}>Добавить треки</Button>
-              <Button size='small' icon='Pen' onClick={() => showEditor('rename')}>Переименовать</Button>
-              <Button size='small' variant='danger' icon='Trash' onClick={() => showEditor('delete')}>Удалить</Button>
+              <Button size='small' disabled={busy} onClick={() => showEditor('add')}>Добавить треки</Button>
+              <Button size='small' icon='Pen' disabled={busy} onClick={() => showEditor('rename')}>Переименовать</Button>
+              <Button size='small' variant='danger' icon='Trash' disabled={busy} onClick={() => showEditor('delete')}>Удалить</Button>
+              {busy && !editor && <LoadingIndicator label='Обновление плейлиста' />}
             </>
           }
           trackAction={(trackId) => {
@@ -112,10 +116,11 @@ function Playlists() {
             <Button variant='primary' size='small' icon='Playlist' disabled={!loaded} onClick={() => showEditor('create')}>Создать плейлист</Button>
           </div>
           {loaded && summaries?.data && <CollectionList items={summaries.data} kind='playlist' empty='Пока нет плейлистов.' open={open} />}
-          {playlist && !detail?.data && !detail?.error && <p role='status'>Загружаем плейлист…</p>}
+          {(!loaded || (!summaries?.data && !summaries?.error) || (playlist && !detail?.data && !detail?.error))
+            && <LoadingIndicator className='kit-message' label='Загрузка плейлистов' />}
         </>
       )}
-      {!editor && (error || summaries?.error || detail?.error) && <p className='p-4 text-red-400' role='alert'>
+      {(error || summaries?.error || detail?.error) && <p className='p-4 text-red-400' role='alert'>
         {error || summaries?.error || detail?.error}
       </p>}
       <Dialog open={editor !== undefined} busy={busy} onDismiss={() => setEditor(undefined)}
@@ -125,32 +130,33 @@ function Playlists() {
           {(editor === 'create' || editor === 'rename') && (
             <Input icon='Playlist' aria-label='Название плейлиста' placeholder='Название плейлиста' value={name}
               maxLength={120} required disabled={busy} data-initial-focus
-              aria-invalid={!!error} onInput={(event) => setName(event.currentTarget.value)} />
+              aria-invalid={!!editorError} onInput={(event) => setName(event.currentTarget.value)} />
           )}
           {editor === 'add' && (
             <>
               <Input icon='Search' aria-label='Поиск трека' placeholder='Найти трек' value={query} data-initial-focus
                 onInput={(event) => setQuery(event.currentTarget.value)} />
+              {busy && <LoadingIndicator label='Добавление трека в плейлист' />}
               <div className='playlist-candidates'>
                 {candidates.tracks.map((track) => (
                   <Track key={track.id} track={track} disabled={busy} onPlay={() => void run(async () => {
                     if (playlist) await changePlaylists({ type: 'add', id: playlist.id, trackId: track.id });
                   })} />
                 ))}
-                {candidates.loading && <p role='status'>Загружаем треки…</p>}
+                {candidates.loading && <LoadingIndicator label='Загрузка треков' />}
                 {candidates.error && <p role='alert'>{candidates.error}</p>}
                 {!candidates.tracks.length && !candidates.loading && !candidates.error && <p className='kit-message'>Нет подходящих треков.</p>}
-                {candidates.hasMore && <Button size='small' onClick={candidates.loadMore}>Показать ещё</Button>}
+                {candidates.hasMore && <Button size='small' pending={candidates.loadingMore} onClick={candidates.loadMore}>Показать ещё</Button>}
               </div>
             </>
           )}
-          {error && <p className='kit-error' role='alert'>{error}</p>}
+          {editorError && <p className='kit-error' role='alert'>{editorError}</p>}
           <div className='kit-dialog-actions'>
             <Button variant={editor === 'add' ? 'primary' : 'secondary'} disabled={busy} onClick={() => setEditor(undefined)}>
               {editor === 'add' ? 'Готово' : 'Отмена'}
             </Button>
             {editor !== 'add' && (
-              <Button type='submit' variant={editor === 'delete' ? 'danger' : 'primary'}
+              <Button type='submit' pending={busy} variant={editor === 'delete' ? 'danger' : 'primary'}
                 disabled={busy || (editor !== 'delete' && !name.trim())}>
                 {editor === 'delete' ? 'Удалить' : 'Сохранить'}
               </Button>
