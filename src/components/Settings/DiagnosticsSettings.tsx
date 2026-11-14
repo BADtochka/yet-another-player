@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
+import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { Icon } from '@/components/Icons/Icon';
 import { type AudioEnvironment, getAudioEnvironment } from '@/utils/audioEnvironment';
 import { getConfigFolderPath, logError, openConfigFolder } from '@/utils/appLogs';
@@ -7,12 +8,19 @@ import { getConfigFolderPath, logError, openConfigFolder } from '@/utils/appLogs
 export function DiagnosticsSettings() {
   const [isOpening, setIsOpening] = useState(false);
   const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(true);
   const [environment, setEnvironment] = useState<AudioEnvironment>();
   const [folder, setFolder] = useState<string>();
 
   useEffect(() => {
-    void getAudioEnvironment().then(setEnvironment).catch(() => undefined);
-    void getConfigFolderPath().then(setFolder).catch(() => undefined);
+    let active = true;
+    void Promise.allSettled([getAudioEnvironment(), getConfigFolderPath()]).then(([audio, config]) => {
+      if (!active) return;
+      if (audio.status === 'fulfilled') setEnvironment(audio.value);
+      if (config.status === 'fulfilled') setFolder(config.value);
+      setLoading(false);
+    });
+    return () => { active = false; };
   }, []);
 
   const open = async () => {
@@ -33,10 +41,11 @@ export function DiagnosticsSettings() {
       <div className='settings-row'>
         <div className='settings-row-info'>
           <h3><Icon name='Folder' size={20} />Логи и конфигурация</h3>
+          {loading && <LoadingIndicator label='Загрузка диагностики' />}
           {folder && <p className='settings-version truncate' title={folder}>{folder}</p>}
         </div>
-        <Button variant='primary' icon='Open' disabled={isOpening} onClick={() => void open()}>
-          {isOpening ? 'Открываем…' : 'Открыть папку'}
+        <Button variant='primary' icon='Open' pending={isOpening} onClick={() => void open()}>
+          Открыть папку
         </Button>
       </div>
       {environment && (

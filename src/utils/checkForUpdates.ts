@@ -1,3 +1,5 @@
+import { h } from 'preact';
+import { Progress } from '@/components/Progress';
 import { create } from 'zustand';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -15,38 +17,34 @@ type AvailableUpdate =
 export const useAvailableUpdate = create<{
   update?: AvailableUpdate;
   installing: boolean;
+  progress?: { downloaded: number; total: number };
   pacmanCommand?: string;
 }>(() => ({ installing: false }));
-
-const formatDownloadProgress = (downloaded: number, total?: number) => {
-  if (total && total > 0) {
-    const percent = Math.min(100, Math.round((downloaded / total) * 100));
-    return `Загрузка обновления... ${percent}%`;
-  }
-
-  const megabytes = (downloaded / 1024 / 1024).toFixed(1);
-  return `Загрузка обновления... ${megabytes} МБ`;
-};
 
 const handleDownloadProgress = (
   event: DownloadEvent,
   state: { downloaded: number; total?: number },
 ) => {
+  if (event.event === 'Finished') {
+    useAvailableUpdate.setState({ progress: undefined });
+    toast.loading('Установка обновления…', { id: UPDATE_TOAST_ID, description: null });
+    return;
+  }
+
   if (event.event === 'Started') {
     state.downloaded = 0;
     state.total = event.data.contentLength;
-    toast.loading(formatDownloadProgress(state.downloaded, state.total), { id: UPDATE_TOAST_ID });
-    return;
-  }
-
-  if (event.event === 'Progress') {
+  } else {
     state.downloaded += event.data.chunkLength;
-    toast.loading(formatDownloadProgress(state.downloaded, state.total), { id: UPDATE_TOAST_ID });
-    return;
   }
 
-  if (event.event === 'Finished') {
-    toast.loading('Установка обновления...', { id: UPDATE_TOAST_ID });
+  const total = state.total;
+  if (total && total > 0) {
+    useAvailableUpdate.setState({ progress: { downloaded: state.downloaded, total } });
+    toast.loading('Загрузка обновления…', {
+      id: UPDATE_TOAST_ID,
+      description: h(Progress, { label: 'Загрузка обновления', value: state.downloaded, max: total }),
+    });
   }
 };
 
@@ -55,7 +53,7 @@ export const installUpdate = async (update: AvailableUpdate) => {
   useAvailableUpdate.setState({ installing: true });
   const progress = { downloaded: 0, total: undefined as number | undefined };
 
-  toast.loading('Загрузка обновления...', { id: UPDATE_TOAST_ID });
+  toast.loading('Загрузка обновления…', { id: UPDATE_TOAST_ID });
 
   try {
     if (update.kind === 'arch') {
@@ -80,7 +78,7 @@ export const installUpdate = async (update: AvailableUpdate) => {
     if (update.kind === 'arch') useAvailableUpdate.setState({ update: undefined, pacmanCommand: undefined });
     toast.error('Не удалось установить обновление', error, { id: UPDATE_TOAST_ID });
   } finally {
-    useAvailableUpdate.setState({ installing: false });
+    useAvailableUpdate.setState({ installing: false, progress: undefined });
   }
 };
 

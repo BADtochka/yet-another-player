@@ -1,5 +1,6 @@
 import { cn } from 'badlib';
-import { useEffect, useId, useRef, useState } from 'preact/hooks';
+import { useCallback, useId, useRef, useState } from 'preact/hooks';
+import { useOutsidePointer } from '@/hooks/useOutsidePointer';
 import { Icon } from '@/components/Icons/Icon';
 
 export type SelectOption<T extends string = string> = {
@@ -27,16 +28,8 @@ export function Select<T extends string>({
   const trigger = useRef<HTMLButtonElement>(null);
   const listId = useId();
   const selected = options.findIndex((option) => option.value === value);
-  const close = () => setOpen(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const onOutside = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) close();
-    };
-    document.addEventListener('pointerdown', onOutside);
-    return () => document.removeEventListener('pointerdown', onOutside);
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+  useOutsidePointer(root, open, close);
 
   const show = () => {
     trigger.current?.focus({ preventScroll: true });
@@ -57,7 +50,7 @@ export function Select<T extends string>({
         disabled={disabled || !options.length} onClick={open ? close : show}
         onKeyDown={(event) => {
           const { key } = event;
-          if (key === 'Escape' && open) { event.preventDefault(); close(); return; }
+          if (key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); close(); return; }
           if (open && (key === 'Enter' || key === ' ')) {
             event.preventDefault();
             const option = options[active];

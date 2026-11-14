@@ -7,11 +7,12 @@ export function Progress({ label, value, max, counts = false, className }: {
   counts?: boolean;
   className?: string;
 }) {
+  const measured = typeof max === 'number' && max > 0;
   return (
     <div className={cn('kit-progress', className)}>
-      {counts && <span aria-hidden='true'>{value ?? 0}</span>}
-      <progress aria-label={label} max={max || 1} value={max ? value ?? undefined : undefined} />
-      {counts && <span aria-hidden='true'>{max ?? '…'}</span>}
+      {counts && measured && <span aria-hidden='true'>{value ?? 0}</span>}
+      <progress aria-label={label} max={measured ? max : undefined} value={measured ? value ?? undefined : undefined} />
+      {counts && measured && <span aria-hidden='true'>{max}</span>}
     </div>
   );
 }

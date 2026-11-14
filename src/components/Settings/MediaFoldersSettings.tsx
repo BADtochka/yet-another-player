@@ -21,7 +21,7 @@ export const MediaFoldersSettings = () => {
 
     try {
       const selectedPath = await open({
-        title: 'Выберите папку с музыкой',
+        title: 'Выберите папку для медиатеки',
         directory: true,
         recursive: true,
         multiple: false,
@@ -63,10 +63,10 @@ export const MediaFoldersSettings = () => {
 
   return (
     <SettingsSection title='Медиатека' description='Папки, в которых хранится и сканируется музыка'
-      actions={musicFolders.length > 0 && !scanId && (
+      actions={musicFolders.length > 0 && (
         <>
-          <Button size='icon' icon='Folder' disabled={isAdding} aria-label='Добавить папку' title='Добавить папку' onClick={onAddFolder} />
-          <Button size='icon' icon='Refresh' disabled={isAdding} aria-label='Пересканировать' title='Пересканировать'
+          <Button size='icon' icon='Folder' pending={isAdding && !scanId} disabled={!!scanId} aria-label='Добавить папку' title='Добавить папку' onClick={onAddFolder} />
+          <Button size='icon' icon='Refresh' disabled={isAdding || !!scanId} aria-label='Пересканировать' title='Пересканировать'
             onClick={() => void onRescan()} />
         </>
       )}>
@@ -76,17 +76,17 @@ export const MediaFoldersSettings = () => {
             onRemove={() => void onRescan(musicFolders.filter((folder) => folder !== path))} />)}
         </div>
       )}
-      {scanId ? (
+      {musicFolders.length === 0 && (
+        <Button variant='primary' icon='Folder' pending={isAdding && !scanId} disabled={!!scanId}
+          onClick={onAddFolder}>Добавить папку</Button>
+      )}
+      {scanId && (
         <div className='settings-scan' aria-live='polite'>
           <p>Сканирование медиатеки…</p>
           <Progress label='Сканирование медиатеки' value={scanProgress?.current} max={scanProgress?.total} counts />
           <Button variant='danger' icon='X' disabled={!scanProgress}
             onClick={() => void cancelMusicScan(scanId).catch((reason) => setError(String(reason)))}>Отменить сканирование</Button>
         </div>
-      ) : musicFolders.length === 0 && (
-        <Button variant='primary' icon='Folder' disabled={isAdding} onClick={onAddFolder}>
-          {isAdding ? 'Выбираем папку…' : 'Добавить папку'}
-        </Button>
       )}
       {error && <p className='kit-error' role='alert'>{error}</p>}
     </SettingsSection>

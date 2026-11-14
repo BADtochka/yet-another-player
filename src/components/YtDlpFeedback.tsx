@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
+import { Spinner } from '@/components/LoadingIndicator';
 import { Dialog } from '@/components/Dialog';
 import { dismissGatekeeperDialog, openMacosPrivacySettings, useYtDlpStatus } from '@/utils/ytDlp';
 
 export const YtDlpChecking = ({ label = 'Проверяем запуск yt-dlp…' }: { label?: string }) => (
   <span className='inline-flex items-center gap-2 text-sm text-(--yap-muted)' role='status'>
-    <span className='size-3.5 animate-spin rounded-full border-2 border-current border-r-transparent motion-reduce:animate-none'
-      aria-hidden='true' />
+    <Spinner />
     {label}
   </span>
 );
@@ -38,7 +38,7 @@ export const YtDlpGatekeeperDialog = () => {
         Откройте раздел вручную через меню Apple → «Системные настройки» → «Конфиденциальность и безопасность».
       </p>}
       <div className='kit-dialog-actions'>
-        <Button variant='primary' icon='Open' disabled={opening} onClick={() => void openSettings()}>
+        <Button variant='primary' icon='Open' pending={opening} onClick={() => void openSettings()}>
           Открыть «Конфиденциальность и безопасность»
         </Button>
       </div>

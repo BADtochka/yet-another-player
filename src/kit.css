@@ -17,7 +17,6 @@
     --yap-danger: #c62828;
     --yap-danger-hover: #dc2626;
     --yap-error: #fca5a5;
-    --yap-window-height: 48px;
     --yap-player-height: 110px;
     --yap-sidebar-width: 56px;
     --yap-list-width: 1200px;
@@ -37,6 +36,7 @@
     outline-offset: 2px;
   }
 
+  button, [role=button] { text-decoration: none; }
   button:disabled { cursor: default; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -68,6 +68,24 @@
     text-align: center;
     cursor: pointer;
     transition: background-color 120ms, border-color 120ms;
+  }
+
+  .kit-spinner {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    flex: none;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: kit-spin 750ms linear infinite;
+  }
+  .yap-toast-description .kit-progress { min-width: 120px; }
+  .kit-loading-indicator { display: inline-flex; align-items: center; color: var(--yap-muted); }
+  @keyframes kit-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .kit-spinner { animation: none; }
+    .kit-progress progress:indeterminate { animation: none; }
   }
 
   .kit-button > svg { flex: none; }
@@ -259,6 +277,7 @@
     border-radius: 42px;
     background: var(--yap-surface);
     color: var(--yap-text);
+    accent-color: var(--yap-text);
   }
 
   .kit-progress progress::-webkit-progress-bar { background: var(--yap-surface); }
