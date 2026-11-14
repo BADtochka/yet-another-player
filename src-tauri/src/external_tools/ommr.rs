@@ -269,6 +269,7 @@ async fn install_into(
         .env("GOROOT", root.join("go"))
         .env("GOCACHE", root.join("build-cache"))
         .env("GOMODCACHE", root.join("module-cache"))
+        .env("GO111MODULE", "on")
         .env("GOENV", "off")
         .env("GOWORK", "off")
         .env("GOFLAGS", "")
@@ -278,6 +279,9 @@ async fn install_into(
         .env_remove("GOARCH")
         .env_remove("GOEXPERIMENT")
         .env_remove("GODEBUG")
+        .env_remove("GOAMD64")
+        .env_remove("GOARM64")
+        .env_remove("GOTMPDIR")
         .env("GOPROXY", "https://proxy.golang.org")
         .env("GOSUMDB", "sum.golang.org")
         .env_remove("GOPRIVATE")
@@ -295,19 +299,28 @@ async fn install_into(
         .arg("./cmd/server");
     let build_log = root.join("build.log");
     go.stderr(Stdio::from(File::create(&build_log).map_err(failure)?));
-    install.wait(async {
-        let mut child = go.spawn().map_err(failure)?;
-        let mut process = ProcessTree::attach(&child).map_err(failure)?;
-        let exit = timeout(Duration::from_secs(600), child.wait()).await.map_err(failure)?.map_err(failure)?;
-        process.completed();
-        if !exit.success() {
-            if let Ok(log) = tokio::fs::read_to_string(&build_log).await {
-                eprintln!("OMMR build: {}", log.lines().rev().take(6).collect::<Vec<_>>().join("\n"));
+    install
+        .wait(async {
+            let mut child = go.spawn().map_err(failure)?;
+            let mut process = ProcessTree::attach(&child).map_err(failure)?;
+            let exit = timeout(Duration::from_secs(600), child.wait())
+                .await
+                .map_err(failure)?
+                .map_err(failure)?;
+            process.completed();
+            if exit.success() {
+                return Ok(());
             }
-            return Err("Не удалось собрать OMMR. Проверьте подключение к proxy.golang.org и повторите установку.".into());
-        }
-        Ok(())
-    }).await?;
+            let log = tokio::fs::read_to_string(&build_log)
+                .await
+                .unwrap_or_default();
+            eprintln!(
+                "OMMR build ({exit}): {}",
+                log.lines().rev().take(6).collect::<Vec<_>>().join("\n")
+            );
+            Err(build_failure(&log, exit))
+        })
+        .await?;
     tokio::fs::write(published.join("revision"), COMMIT)
         .await
         .map_err(failure)?;
@@ -325,6 +338,25 @@ async fn install_into(
         .map_err(failure)?;
     let _ = bundle::remove_directory(&tools.join(PREVIOUS)).await;
     status(tools).await
+}
+
+fn build_failure(log: &str, exit: std::process::ExitStatus) -> String {
+    let log = log.to_ascii_lowercase();
+    let reason = if log.contains("no space left") || log.contains("not enough space") {
+        "На диске закончилось свободное место."
+    } else if log.contains("permission denied") || log.contains("access is denied") {
+        "Системе не удалось получить доступ к файлам сборки."
+    } else if log.contains("checksum mismatch") || log.contains("security error") {
+        "Не удалось подтвердить контрольные суммы зависимостей."
+    } else if log.lines().any(|line| {
+        !line.starts_with("go: downloading")
+            && (line.contains("proxy.golang.org") || line.contains("sum.golang.org"))
+    }) {
+        "Не удалось загрузить или проверить зависимости Go. Проверьте доступ к proxy.golang.org и sum.golang.org."
+    } else {
+        return format!("Не удалось собрать OMMR. Go завершился с ошибкой ({exit}).");
+    };
+    format!("Не удалось собрать OMMR. {reason}")
 }
 
 fn phase(progress: &Channel<InstallProgress>, status: &'static str) {
