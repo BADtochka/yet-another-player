@@ -256,6 +256,9 @@ async fn install_into(
     extracted.await.map_err(failure)?.map_err(failure)?;
     phase(progress, "building");
     let root = stage.path();
+    // Go's module cache paths must use regular Windows syntax for go:embed to find files.
+    #[cfg(windows)]
+    let root = dunce::simplified(root);
     let published = root.join("install");
     tokio::fs::create_dir(&published).await.map_err(failure)?;
     let output = published.join(BINARY);
@@ -740,11 +743,15 @@ mod tests {
     #[ignore = "downloads Go and builds the pinned OMMR server"]
     async fn installs_and_checks_real_local_server_in_a_temporary_directory() {
         let directory = tempfile::tempdir().unwrap();
+        let tools = bundle::tools_directory(directory.path(), true)
+            .await
+            .unwrap()
+            .unwrap();
         let installer = Installer::new();
         let install = installer.start("integration".into()).unwrap();
         let server = LocalServer::default();
         let progress = Channel::new(|_| Ok(()));
-        let status = install_into(directory.path(), &server, &install, &progress)
+        let status = install_into(&tools, &server, &install, &progress)
             .await
             .unwrap();
         assert!(status.installed);
