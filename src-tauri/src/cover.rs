@@ -266,14 +266,53 @@ pub fn extract_cover_from_mp3(path: &Path) -> Option<(Vec<u8>, String)> {
     None
 }
 
+pub(crate) fn folder_cover(track: &Path) -> Option<Vec<u8>> {
+    const MAX_SIZE: u64 = 16 * 1024 * 1024;
+
+    let folder = track.parent()?;
+    [
+        "cover.jpg",
+        "cover.jpeg",
+        "cover.png",
+        "cover.webp",
+        "folder.jpg",
+        "folder.png",
+    ]
+    .into_iter()
+    .find_map(|name| {
+        let path = fs::canonicalize(folder.join(name)).ok()?;
+        if path.parent()? != folder || !fs::metadata(&path).ok()?.is_file() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        File::open(path)
+            .ok()?
+            .take(MAX_SIZE + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() as u64 <= MAX_SIZE
+            && matches!(
+                image::guess_format(&bytes).ok()?,
+                image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::WebP
+            ))
+        .then_some(bytes)
+    })
+}
+
 pub fn load_cover(path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, &'static str)> {
     let (image, mime) = if cache_dir.as_os_str().is_empty() {
         extract_cover(path)?
     } else {
         let cache_file = cache_file_for_path(cache_dir, path);
 
-        if let Some(cached) = read_cached_cover(&cache_file) {
-            return Some(cached);
+        let modified = |path: &Path| fs::metadata(path).ok()?.modified().ok();
+        if modified(&cache_file)
+            .zip(modified(path))
+            .is_some_and(|(cached, source)| cached >= source)
+        {
+            if let Some(cached) = read_cached_cover(&cache_file) {
+                return Some(cached);
+            }
         }
 
         let extracted = extract_cover(path)?;
@@ -287,7 +326,13 @@ pub fn load_cover(path: &Path, cache_dir: &Path) -> Option<(Vec<u8>, &'static st
 pub(crate) fn extract_cover(path: &Path) -> Option<(Vec<u8>, String)> {
     let from_tags = || {
         let options = ParseOptions::new().read_properties(false);
-        let file = Probe::open(path).ok()?.options(options).read().ok()?;
+        let probe = Probe::open(path).ok()?;
+        let probe = if probe.file_type().is_none() {
+            probe.guess_file_type().ok()?
+        } else {
+            probe
+        };
+        let file = probe.options(options).read().ok()?;
         let mut pictures = file
             .tags()
             .iter()

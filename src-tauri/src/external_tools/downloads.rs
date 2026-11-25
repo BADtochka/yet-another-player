@@ -293,7 +293,7 @@ pub(crate) async fn download_yt_dlp(
                     .is_some_and(|ext| ext == "mp4")
                 {
                     if let Ok(destination) =
-                        video_destination(&video_app, &video_id_for_cache).await
+                        prepare_clip_destination(&video_app, &video_id_for_cache).await
                     {
                         if let Err(error) =
                             tokio::fs::hard_link(download.track.path(), &destination).await
@@ -308,7 +308,8 @@ pub(crate) async fn download_yt_dlp(
     result
 }
 
-const VIDEO_FORMAT: &str = "bestvideo[ext=mp4][vcodec^=avc1]/best[ext=mp4][vcodec^=avc1]";
+const VIDEO_FORMAT: &str = "best[height<=720][ext=mp4][vcodec^=avc1][acodec^=mp4a]/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]";
+const MERGED_VIDEO_FORMAT: &str = "best[height<=720][ext=mp4][vcodec^=avc1][acodec^=mp4a]/bestvideo[height<=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]";
 
 #[tauri::command]
 pub(crate) async fn external_video_available(
@@ -316,27 +317,46 @@ pub(crate) async fn external_video_available(
     video_id: String,
 ) -> Result<bool, YtDlpError> {
     let url = source_video_url(&video_id)?;
+    let destination = clip_path(&app, &video_id)?;
+    if tokio::fs::symlink_metadata(destination)
+        .await
+        .is_ok_and(|file| file.is_file() && file.len() > 0)
+    {
+        return Ok(true);
+    }
     let executable = installed_yt_dlp(&app).await?;
-    super::search::is_playable_clip(&executable.path, &video_id, &url).await
+    let can_merge = super::ffmpeg::installed(&app)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    super::search::is_playable_clip(&executable.path, &video_id, &url, can_merge).await
 }
 
-async fn video_destination(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, YtDlpError> {
-    let directory = app
+pub(crate) fn clip_path(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, YtDlpError> {
+    source_video_url(id)?;
+    Ok(app
         .path()
         .app_data_dir()
         .map_err(|_| YtDlpError::TargetUnavailable)?
-        .join("videos");
-    tokio::fs::create_dir_all(&directory)
+        .join("videos")
+        .join(format!("{id}-av.mp4")))
+}
+
+async fn prepare_clip_destination(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, YtDlpError> {
+    let destination = clip_path(app, id)?;
+    let directory = destination.parent().ok_or(YtDlpError::TargetUnavailable)?;
+    tokio::fs::create_dir_all(directory)
         .await
         .map_err(|_| YtDlpError::TargetUnavailable)?;
-    Ok(directory.join(format!("{id}.mp4")))
+    Ok(destination)
 }
 
 #[derive(Clone, Copy)]
 enum DownloadKind<'a> {
     Audio,
     Combined(Option<&'a Path>),
-    Video,
+    Video(Option<&'a Path>),
 }
 
 #[tauri::command]
@@ -348,7 +368,7 @@ pub(crate) async fn download_yt_dlp_video(
     progress: Channel<DownloadProgress>,
 ) -> Result<PathBuf, YtDlpError> {
     let url = source_video_url(&video_id)?;
-    let destination = video_destination(&app, &video_id).await?;
+    let destination = prepare_clip_destination(&app, &video_id).await?;
     let directory = destination.parent().ok_or(YtDlpError::TargetUnavailable)?;
     if tokio::fs::symlink_metadata(&destination)
         .await
@@ -359,7 +379,9 @@ pub(crate) async fn download_yt_dlp_video(
 
     let active = downloads.start(id)?;
     let _ = progress.send(DownloadProgress::Preparing);
-    let executable = installed_yt_dlp(&app).await?;
+    let (executable, ffmpeg) = tokio::join!(installed_yt_dlp(&app), super::ffmpeg::installed(&app));
+    let executable = executable?;
+    let ffmpeg = ffmpeg.ok().flatten();
     let stage = tempfile::Builder::new()
         .prefix(".yap-video-")
         .tempdir_in(directory)
@@ -368,7 +390,7 @@ pub(crate) async fn download_yt_dlp_video(
         &executable.path,
         stage.path(),
         &url,
-        DownloadKind::Video,
+        DownloadKind::Video(ffmpeg.as_ref().map(|tool| tool.path.as_path())),
         &active.job,
         &progress,
     )
@@ -449,14 +471,16 @@ async fn fetch_media(
             "--output",
             "%(title).160B [%(id)s].%(ext)s",
         ]),
-        DownloadKind::Video => command.args([
+        DownloadKind::Video(ffmpeg) => command.args([
+            "--concurrent-fragments",
+            "4",
             "--format",
-            VIDEO_FORMAT,
+            if ffmpeg.is_some() { MERGED_VIDEO_FORMAT } else { VIDEO_FORMAT },
             "--output",
             "video.%(ext)s",
         ]),
     };
-    if let DownloadKind::Combined(Some(ffmpeg)) = kind {
+    if let DownloadKind::Combined(Some(ffmpeg)) | DownloadKind::Video(Some(ffmpeg)) = kind {
         command
             .arg("--ffmpeg-location")
             .arg(ffmpeg)

@@ -1,9 +1,10 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     panic::catch_unwind,
-    path::Path,
+    path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use lofty::{
@@ -15,7 +16,7 @@ use lofty::{
     probe::Probe,
     tag::{ItemKey, Tag, TagExt, TagItem, TagType},
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
     audio::library_track_path,
@@ -24,6 +25,27 @@ use crate::{
 };
 
 const LYRICS_KEYS: [ItemKey; 2] = [ItemKey::Lyrics, ItemKey::UnsyncLyrics];
+pub(crate) const MAX_LYRICS_BYTES: usize = 256 * 1024;
+
+pub(crate) fn read_sidecar(track: &Path, roots: &Mutex<Vec<PathBuf>>) -> Option<String> {
+    let lyrics = std::fs::canonicalize(track.with_extension("lrc")).ok()?;
+    if !lyrics.is_file()
+        || !roots
+            .lock()
+            .ok()?
+            .iter()
+            .any(|root| track.starts_with(root) && lyrics.starts_with(root))
+    {
+        return None;
+    }
+    let mut text = String::new();
+    File::open(lyrics)
+        .ok()?
+        .take((MAX_LYRICS_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() <= MAX_LYRICS_BYTES && !text.trim().is_empty()).then_some(text)
+}
 
 #[tauri::command]
 pub(crate) async fn save_track_lyrics(
@@ -34,8 +56,9 @@ pub(crate) async fn save_track_lyrics(
     text: String,
     background: Option<bool>,
     expected_fetched: Option<String>,
+    sidecar: Option<bool>,
 ) -> Result<(), String> {
-    if text.trim().is_empty() || text.len() > 256 * 1024 || text.contains('\0') {
+    if text.trim().is_empty() || text.len() > MAX_LYRICS_BYTES || text.contains('\0') {
         return Err("Недопустимый текст песни".into());
     }
     let path = library_track_path(&path, &folders.canonical)?;
@@ -43,17 +66,27 @@ pub(crate) async fn save_track_lyrics(
     let writer = library.lock_catalog_writer().await;
     tauri::async_runtime::spawn_blocking(move || -> LibraryResult<()> {
         let _writer = writer;
-        if background == Some(true) && crate::library::read_fetched_lyrics(&database, &path)? != expected_fetched {
+        if background == Some(true)
+            && crate::library::read_fetched_lyrics(&database, &path)? != expected_fetched
+        {
             return Ok(());
         }
         crate::library::save_fetched_lyrics(&database, &path, &text)?;
-        // Unsupported formats and files with existing lyrics keep the fetched version in the catalog.
-        match catch_unwind(|| embed(&path, &text)) {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => eprintln!("Lyrics tags: {error}"),
-            Err(panic) => eprintln!("Lyrics tags: {}", crate::panic_message(&*panic)),
+        if sidecar == Some(true) {
+            write_lrc(&path, &text)?;
+        } else {
+            // Unsupported formats and files with existing lyrics keep the fetched version in the catalog.
+            match catch_unwind(|| embed(&path, &text)) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("Lyrics tags: {error}"),
+                Err(panic) => eprintln!("Lyrics tags: {}", crate::panic_message(&*panic)),
+            }
         }
-        if background == Some(true) {
+        if let Some(path) = path.to_str() {
+            app.state::<crate::audio::AudioEngine>()
+                .lyrics_changed(path);
+        }
+        if background == Some(true) || sidecar == Some(true) {
             let _ = app.emit("library:lyrics", path);
         }
         Ok(())
@@ -64,6 +97,36 @@ pub(crate) async fn save_track_lyrics(
         eprintln!("Lyrics catalog: {error}");
         "Не удалось сохранить текст песни".into()
     })
+}
+
+fn write_lrc(track: &Path, text: &str) -> LibraryResult<()> {
+    let path = track.with_extension("lrc");
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Ok(());
+    }
+    let parent = path.parent().ok_or("Missing track directory")?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(text.as_bytes())?;
+    staged.as_file().sync_all()?;
+    match staged.persist_noclobber(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.error.into()),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn synced_lyrics_are_written_beside_audio_without_overwriting_an_existing_lrc() {
+    let folder = tempfile::tempdir().unwrap();
+    let track = folder.path().join("song.flac");
+    let lyrics = "[00:01.500]First line\n[00:03.000]Second line\n";
+    write_lrc(&track, lyrics).unwrap();
+    write_lrc(&track, "Replacement").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(track.with_extension("lrc")).unwrap(),
+        lyrics
+    );
 }
 
 fn embed(path: &Path, text: &str) -> LibraryResult<()> {

@@ -2,6 +2,8 @@ import { loadCatalog } from '@/utils/parseMusic';
 import { startPlayer } from '@/stores/playerStore';
 import { settingsStoreHandler, useSettingsStore } from '@/stores/settingsStore';
 import { registerMusicRoots } from '@/utils/musicFolders';
+import { loadDisabledTools } from '@/utils/externalTools';
+import { geniusIsConfigured } from '@/utils/genius';
 
 let started = false;
 
@@ -16,6 +18,8 @@ export const startStores = async () => {
   started = true;
 
   await settingsStoreHandler.start();
+  await loadDisabledTools().catch((error) => console.warn('Could not read external tool settings', error));
+  void geniusIsConfigured().catch(() => undefined);
 
   const { musicFolders, setMusicFolders } = useSettingsStore.getState();
   setMusicFolders(musicFolders);

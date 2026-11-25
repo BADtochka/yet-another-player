@@ -4,6 +4,8 @@ export type CollectionSummary = {
   id: string;
   name: string;
   subtitle: string | null;
+  artists?: string[];
+  shortRelease?: boolean;
   coverPath: string | null;
   duration: number;
   trackCount: number;

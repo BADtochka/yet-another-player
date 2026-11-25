@@ -7,14 +7,21 @@ import { type TrackSort } from '@/stores/trackViewStore';
 import { toast } from '@/utils/toast';
 import { type CollectionSummary } from '@/utils/collections';
 
-export const useMetadataLookup = create<{ running: boolean }>(() => ({ running: false }));
+type ReleaseProgress = { phase: 'artists' | 'releases'; current: number; total: number };
+export const useMetadataLookup = create<{ running: boolean; releaseProgress: ReleaseProgress | null; releaseRevision: number }>(
+  () => ({ running: false, releaseProgress: null, releaseRevision: 0 }),
+);
 export const useCatalogRevision = create<{ revision: number }>(() => ({ revision: 0 }));
+const usePlayCountRevision = create<{ revision: number }>(() => ({ revision: 0 }));
 export const invalidateCatalog = () => useCatalogRevision.setState(({ revision }) => ({ revision: revision + 1 }));
 export const listenForCatalogChanges = async () => {
   const listeners = await Promise.allSettled([
     listen('library:metadata', invalidateCatalog),
+    listen('library:play-count', () => usePlayCountRevision.setState(({ revision }) => ({ revision: revision + 1 }))),
     listen<boolean>('library:metadata-running', ({ payload }) => useMetadataLookup.setState({ running: payload })),
-    listen('library:metadata-error', () => toast.error('Не удалось закончить поиск метаданных в OMMR')),
+    listen<ReleaseProgress | null>('library:release-progress', ({ payload }) => useMetadataLookup.setState({ releaseProgress: payload })),
+    listen('library:release-catalog', () => useMetadataLookup.setState(({ releaseRevision }) => ({ releaseRevision: releaseRevision + 1 }))),
+    listen('library:metadata-error', () => toast.error('Не удалось закончить поиск метаданных')),
   ]);
   return () => {
     for (const listener of listeners) {
@@ -32,9 +39,9 @@ type LoadedPage = Page & { queryKey: string; requestKey: string };
 
 export const tracksByPaths = (paths: string[]) => invoke<Track[]>('library_tracks_by_paths', { paths });
 
-function useLibraryResource<T>(key: string, load: () => Promise<T>, enabled: boolean) {
+function useLibraryResource<T>(key: string, load: () => Promise<T>, enabled: boolean, playbackRevision = 0) {
   const revision = useCatalogRevision((state) => state.revision);
-  const requestKey = JSON.stringify([key, revision]);
+  const requestKey = JSON.stringify([key, revision, playbackRevision]);
   const [result, setResult] = useState<{ key: string; data?: T; error?: string }>();
   useEffect(() => {
     if (!enabled) return;
@@ -62,12 +69,15 @@ export const useCollections = (kind: CollectionKind, text = '', enabled = true) 
     enabled,
   );
 
-export const useCollectionTracks = (kind: CollectionKind, id?: string) =>
-  useLibraryResource(
+export function useCollectionTracks(kind: CollectionKind, id?: string) {
+  const playbackRevision = usePlayCountRevision((state) => kind === 'album' && id !== undefined ? state.revision : 0);
+  return useLibraryResource(
     JSON.stringify([kind, id]),
     () => invoke<Track[]>('library_collection_tracks', { kind, id }),
     id !== undefined,
+    playbackRevision,
   );
+}
 
 export const useExternalTracks = (ids: string[]) =>
   useLibraryResource(

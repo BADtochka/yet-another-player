@@ -2,8 +2,10 @@ use std::{sync::OnceLock, time::Duration};
 
 use reqwest::{redirect::Policy, Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, State};
 
-const LYRICS_URL: &str = "https://test-0k.onrender.com/lyrics/";
+use crate::external_tools::lyrica_server::LocalLyrica;
+
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -17,21 +19,19 @@ pub(crate) enum Provider {
     Megalobiz,
     Musixmatch,
     AppleMusic,
-    Genius,
 }
 
 impl Provider {
-    fn sequence(self) -> Option<&'static str> {
+    fn sequence(self) -> &'static str {
         match self {
-            Self::Auto => None,
-            Self::Lrclib => Some("lrclib"),
-            Self::Lrcmux => Some("lrcmux"),
-            Self::VideoCaptions => Some(crate::external_tools::SOURCE_NAME),
-            Self::Netease => Some("netease"),
-            Self::Megalobiz => Some("megalobiz"),
-            Self::Musixmatch => Some("musixmatch"),
-            Self::AppleMusic => Some("apple_music"),
-            Self::Genius => Some("genius"),
+            Self::Auto => "2,7,3,4,5,6,8",
+            Self::Lrclib => "lrclib",
+            Self::Lrcmux => "lrcmux",
+            Self::VideoCaptions => crate::external_tools::SOURCE_NAME,
+            Self::Netease => "netease",
+            Self::Megalobiz => "megalobiz",
+            Self::Musixmatch => "musixmatch",
+            Self::AppleMusic => "apple_music",
         }
     }
 
@@ -52,7 +52,6 @@ impl Provider {
             "megalobiz" => Some(Self::Megalobiz),
             "musixmatch" => Some(Self::Musixmatch),
             "apple_music" => Some(Self::AppleMusic),
-            "genius" => Some(Self::Genius),
             _ => None,
         }
     }
@@ -66,6 +65,8 @@ pub(crate) enum LookupError {
     TimedOut,
     RateLimited,
     Service,
+    NotInstalled,
+    LocalUnavailable,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,7 +124,7 @@ fn decode(body: &[u8], requested: Provider) -> Result<Option<Lyrics>, LookupErro
     let data = response.data.ok_or(LookupError::Service)?;
     let provider = Provider::from_source(&data.source);
     // An instance may fall back to its default providers if the requested adapter is disabled.
-    if requested != Provider::Auto && provider != Some(requested) {
+    if provider.is_none() || (requested != Provider::Auto && provider != Some(requested)) {
         return Ok(None);
     }
     let instrumental = data.instrumental.unwrap_or(false);
@@ -163,6 +164,8 @@ fn network_error(error: reqwest::Error) -> LookupError {
 
 #[tauri::command]
 pub(crate) async fn lookup_lyrica_lyrics(
+    app: AppHandle,
+    server: State<'_, LocalLyrica>,
     title: String,
     artist: String,
     provider: Provider,
@@ -176,11 +179,17 @@ pub(crate) async fn lookup_lyrica_lyrics(
     }) {
         return Err(LookupError::InvalidTrack);
     }
+    let endpoint = server
+        .endpoint(&app)
+        .await
+        .map_err(|_| LookupError::LocalUnavailable)?
+        .ok_or(LookupError::NotInstalled)?;
 
     static CLIENT: OnceLock<Result<Client, LookupError>> = OnceLock::new();
     let client = CLIENT
         .get_or_init(|| {
             Client::builder()
+                .no_proxy()
                 .redirect(Policy::none())
                 .connect_timeout(Duration::from_secs(6))
                 .timeout(Duration::from_secs(35))
@@ -189,26 +198,18 @@ pub(crate) async fn lookup_lyrica_lyrics(
         })
         .as_ref()
         .map_err(|_| LookupError::Network)?;
-    let mut request = client.get(LYRICS_URL).query(&[
+    let request = endpoint.get(client, "/lyrics/").query(&[
         ("song", title),
         ("artist", artist),
-        (
-            "timestamps",
-            if provider == Provider::Genius {
-                "false"
-            } else {
-                "true"
-            },
-        ),
+        ("timestamps", "true"),
         ("word", "false"),
         ("metadata", "false"),
         ("translate", "false"),
         ("romanize", "false"),
         ("mood", "false"),
+        ("sequence", provider.sequence()),
+        ("pass", "true"),
     ]);
-    if let Some(sequence) = provider.sequence() {
-        request = request.query(&[("sequence", sequence), ("pass", "true")]);
-    }
 
     let mut response = request.send().await.map_err(network_error)?;
     match response.status() {
@@ -260,11 +261,9 @@ mod tests {
     }
 
     #[test]
-    fn preserves_plain_lyrics_from_genius() {
+    fn rejects_genius_even_if_lyrica_returns_it_automatically() {
         let body = br#"{"status":"success","data":{"source":"genius","lyrics":"One\nTwo"}}"#;
-        let lyrics = decode(body, Provider::Genius).unwrap().unwrap();
-        assert_eq!(lyrics.text, "One\nTwo");
-        assert!(lyrics.lines.is_empty());
+        assert!(decode(body, Provider::Auto).unwrap().is_none());
     }
 
     #[test]

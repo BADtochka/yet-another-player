@@ -8,10 +8,11 @@ use icu_collator::{
 use icu_locale_core::locale;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
-use super::{connect, user_error, Library, LibraryResult, Tags, Track};
+use super::{catalog, connect, user_error, Library, LibraryResult, Tags, Track};
 use crate::audio::{Action, AudioEngine, Snapshot};
+use crate::{external_tools::valid_video_id, MusicFolders};
 
 pub(super) fn migrate(db: &mut Connection) -> LibraryResult<()> {
     let tx = db.transaction()?;
@@ -328,7 +329,117 @@ pub struct Page {
 }
 
 fn track_row(row: &rusqlite::Row<'_>) -> LibraryResult<Track> {
-    Track::from_metadata(row.get(0)?, row.get(1)?, &row.get::<_, String>(2)?)
+    Track::from_metadata(
+        row.get(0)?,
+        row.get(1)?,
+        &row.get::<_, String>(2)?,
+        row.get(3)?,
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackEntry {
+    id: i64,
+    played_at: i64,
+    track: Track,
+}
+
+#[tauri::command]
+pub async fn library_playback_history(
+    state: State<'_, Library>,
+    before: Option<i64>,
+) -> Result<Vec<PlaybackEntry>, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || -> LibraryResult<Vec<PlaybackEntry>> {
+        let db = connect(&database)?;
+        let mut statement = db.prepare(&format!(
+            "SELECT t.id, t.path, {}, {}, h.id, h.played_at
+             FROM playback_history h
+             LEFT JOIN track_variant v ON v.variant_id=h.track_id
+             JOIN track t ON t.id=COALESCE(v.audio_id,h.track_id)
+             WHERE h.id<COALESCE(?1,9223372036854775807) AND {ACTIVE}
+             ORDER BY h.id DESC LIMIT 80",
+            super::versions::METADATA,
+            super::versions::PLAY_COUNT,
+        ))?;
+        let mut rows = statement.query([before])?;
+        let mut history = Vec::new();
+        while let Some(row) = rows.next()? {
+            history.push(PlaybackEntry {
+                id: row.get(4)?,
+                played_at: row.get(5)?,
+                track: track_row(row)?,
+            });
+        }
+        Ok(history)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(user_error)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataLogPage {
+    entries: Vec<MetadataLogEntry>,
+    scanned: i64,
+    total: i64,
+    updated: i64,
+    issues: i64,
+}
+
+#[derive(Serialize)]
+pub struct MetadataLogEntry {
+    track: Track,
+    status: String,
+    attempts: Vec<super::ommr::Attempt>,
+}
+
+#[tauri::command]
+pub async fn library_metadata_log(
+    state: State<'_, Library>,
+    folder: String,
+    before: Option<i64>,
+) -> Result<MetadataLogPage, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || -> LibraryResult<MetadataLogPage> {
+        let db = connect(&database)?;
+        let (total, scanned, updated, issues) = db.query_row(
+            "SELECT COUNT(*), COUNT(CASE WHEN m.status<>'searching' THEN 1 END),
+                    COUNT(CASE WHEN m.status='updated' THEN 1 END),
+                    COUNT(CASE WHEN m.status IN ('error', 'unavailable') THEN 1 END) FROM source s
+             LEFT JOIN metadata_log m ON m.track_id=s.track_id WHERE s.root=?1",
+            [&folder],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let mut statement = db.prepare(&format!(
+            "SELECT t.id, t.path, {}, {}, m.status, m.attempts FROM source s
+             JOIN metadata_log m ON m.track_id=s.track_id JOIN track t ON t.id=m.track_id
+             WHERE s.root=?1 AND t.id<COALESCE(?2,9223372036854775807) ORDER BY t.id DESC LIMIT 50",
+            super::versions::METADATA,
+            super::versions::PLAY_COUNT,
+        ))?;
+        let mut rows = statement.query(params![folder, before])?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next()? {
+            entries.push(MetadataLogEntry {
+                track: track_row(row)?,
+                status: row.get(4)?,
+                attempts: serde_json::from_str(&row.get::<_, String>(5)?)?,
+            });
+        }
+        Ok(MetadataLogPage {
+            entries,
+            scanned,
+            total,
+            updated,
+            issues,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(user_error)
 }
 
 fn read_page(
@@ -342,7 +453,11 @@ fn read_page(
         .filter(|cursor| cursor.revision == revision)
         .map(|cursor| cursor.id);
     let (sql, term, short, phrase) = query.select(
-        &format!("t.id, t.path, {}", super::versions::METADATA),
+        &format!(
+            "t.id, t.path, {}, {}",
+            super::versions::METADATA,
+            super::versions::PLAY_COUNT
+        ),
         after.is_some(),
     )?;
     let mut statement = tx.prepare(&sql)?;
@@ -383,6 +498,36 @@ pub enum QueueTarget {
     Last,
 }
 
+struct QueueTrack {
+    id: i64,
+    path: String,
+    gain: Option<f32>,
+}
+
+impl QueueTrack {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            gain: row.get(2)?,
+        })
+    }
+
+    fn into_audio(self) -> crate::audio::Track {
+        crate::audio::Track::local(self.path, self.gain)
+    }
+}
+
+fn query_queue(db: &Connection, query: &TrackQuery) -> LibraryResult<Vec<QueueTrack>> {
+    let (sql, term, short, phrase) = query.select("t.id, t.path, i.gain", false)?;
+    let mut statement = db.prepare(&sql)?;
+    let rows = statement.query_map(
+        params![term, None::<i64>, -1, query.exclude_playlist, short, phrase],
+        QueueTrack::from_row,
+    )?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 fn read_queue(
     db: &Connection,
     query: &TrackQuery,
@@ -395,33 +540,64 @@ fn read_queue(
             [&path], |row| row.get(0)).optional()?.unwrap_or(path) },
         other => other,
     };
-    let (sql, term, short, phrase) = query.select("t.id, t.path, i.gain", false)?;
-    let mut statement = db.prepare(&sql)?;
-    let mut rows = statement.query(params![
-        term,
-        None::<i64>,
-        -1,
-        query.exclude_playlist,
-        short,
-        phrase
-    ])?;
-    let mut queue = Vec::new();
-    let mut selected = None;
-    while let Some(row) = rows.next()? {
-        let id: i64 = row.get(0)?;
-        let path: String = row.get(1)?;
-        let matches = match &target {
-            QueueTarget::Id { id: target } => *target == id,
-            QueueTarget::Path { path: target } => *target == path,
-            QueueTarget::First => queue.is_empty(),
-            QueueTarget::Last => true,
-        };
-        if matches {
-            selected = Some(queue.len());
+    let entries = query_queue(db, query)?;
+    let selected = match target {
+        QueueTarget::Id { id } => entries.iter().position(|entry| entry.id == id),
+        QueueTarget::Path { path } => entries.iter().position(|entry| entry.path == path),
+        QueueTarget::First => (!entries.is_empty()).then_some(0),
+        QueueTarget::Last => entries.len().checked_sub(1),
+    };
+    Ok(selected.map(|index| {
+        (
+            entries.into_iter().map(QueueTrack::into_audio).collect(),
+            index,
+        )
+    }))
+}
+
+fn read_search_queue(
+    db: &Connection,
+    query: &TrackQuery,
+    track_id: i64,
+    linked_ids: impl IntoIterator<Item = i64>,
+) -> LibraryResult<Option<Vec<QueueTrack>>> {
+    let selected = super::versions::audio_id(db, track_id)?;
+    let mut entries = query_queue(db, query)?;
+    let mut seen: HashSet<_> = entries.iter().map(|entry| entry.id).collect();
+    let mut lookup = db.prepare(&format!(
+        "SELECT t.id, t.path, i.gain FROM track_index i JOIN track t ON t.id=i.id
+         WHERE t.id=?1 AND {ACTIVE} AND {PRIMARY}"
+    ))?;
+    for id in linked_ids {
+        if seen.insert(id) {
+            entries.extend(lookup.query_row([id], QueueTrack::from_row).optional()?);
         }
-        queue.push(crate::audio::Track::local(path, row.get(2)?));
     }
-    Ok(selected.map(|index| (queue, index)))
+    if !entries.iter().any(|entry| entry.id == selected) {
+        let Some(track) = lookup
+            .query_row([selected], QueueTrack::from_row)
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        entries.insert(0, track);
+    }
+    if entries.len() == 1 {
+        // A search with only one playable result can continue through the library order.
+        entries = query_queue(
+            db,
+            &TrackQuery {
+                sort: Sort::Path,
+                text: String::new(),
+                exclude_playlist: None,
+            },
+        )?;
+    }
+    let Some(index) = entries.iter().position(|entry| entry.id == selected) else {
+        return Ok(None);
+    };
+    entries.rotate_left(index);
+    Ok(Some(entries))
 }
 
 #[tauri::command]
@@ -439,20 +615,56 @@ pub async fn library_tracks_page(
 
 #[tauri::command]
 pub async fn library_play_tracks(
+    app: AppHandle,
     state: State<'_, Library>,
     audio: State<'_, AudioEngine>,
+    folders: State<'_, MusicFolders>,
     query: TrackQuery,
     target: QueueTarget,
     position: f64,
     playing: bool,
+    search_video_ids: Option<Vec<String>>,
 ) -> Result<Option<Snapshot>, String> {
     let path = state.database.clone();
-    let request = audio.reserve_queue();
-    let queue =
-        tauri::async_runtime::spawn_blocking(move || read_queue(&connect(&path)?, &query, target))
-            .await
+    let search = if let Some(ids) = search_video_ids {
+        let QueueTarget::Id { id } = target else {
+            return Err("Для очереди поиска нужен выбранный трек".into());
+        };
+        if ids.len() > 24 || !ids.iter().all(|id| valid_video_id(id)) {
+            return Err("Некорректные идентификаторы видео".into());
+        }
+        let roots = folders
+            .canonical
+            .lock()
             .map_err(|error| error.to_string())?
-            .map_err(user_error)?;
+            .clone();
+        Some((id, ids, roots))
+    } else {
+        None
+    };
+    let restart_shuffle = search.is_some();
+    let request = audio.reserve_queue();
+    let queue = tauri::async_runtime::spawn_blocking(move || -> LibraryResult<_> {
+        let mut db = connect(&path)?;
+        let Some((id, ids, roots)) = search else {
+            return read_queue(&db, &query, target);
+        };
+        let linked = if ids.is_empty() {
+            Default::default()
+        } else {
+            app.state::<Library>()
+                .active_external_tracks(&ids, &roots)?
+        };
+        let linked_ids = ids
+            .iter()
+            .filter_map(|video| linked.get(video).map(|track| track.id));
+        let tx = db.transaction()?;
+        Ok(read_search_queue(&tx, &query, id, linked_ids)?
+            .map(|entries| (entries.into_iter().map(QueueTrack::into_audio).collect(), 0)))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(user_error)?;
     let Some((tracks, index)) = queue else {
         return Ok(None);
     };
@@ -464,6 +676,8 @@ pub async fn library_play_tracks(
                 index,
                 position,
                 playing,
+                restart_shuffle,
+                playlist_mix: None,
             },
         )
         .await
@@ -482,8 +696,9 @@ pub async fn library_tracks_by_paths(
     tauri::async_runtime::spawn_blocking(move || -> LibraryResult<Vec<Track>> {
         let db = connect(&database)?;
         let mut statement = db.prepare(&format!(
-            "SELECT t.id, t.path, {} FROM track t WHERE t.path=?1",
-            super::versions::METADATA
+            "SELECT t.id, t.path, {}, {} FROM track t WHERE t.path=?1",
+            super::versions::METADATA,
+            super::versions::PLAY_COUNT
         ))?;
         let mut tracks = Vec::new();
         for path in paths {
@@ -513,12 +728,33 @@ pub struct CollectionSummary {
     id: String,
     name: String,
     subtitle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artists: Option<Vec<String>>,
+    short_release: bool,
     cover_path: Option<String>,
     duration: f64,
     track_count: i64,
     year: Option<u16>,
     added_at: Option<i64>,
     first_track_id: Option<i64>,
+}
+
+impl Library {
+    pub(crate) fn album_cover_paths(&self, path: &str) -> LibraryResult<Vec<String>> {
+        let db = connect(&self.database)?;
+        let mut statement = db.prepare(&format!(
+            "SELECT t.path FROM track_index i JOIN track t ON t.id=i.id
+             WHERE i.album_id=(
+                SELECT member.album_id FROM track original
+                LEFT JOIN track_variant v ON v.variant_id=original.id
+                JOIN track_index member ON member.id=COALESCE(v.audio_id, original.id)
+                WHERE original.path=?1
+             ) AND i.album_id NOT LIKE 'single:%' AND {ACTIVE} AND {PRIMARY}
+             ORDER BY i.disc, i.track_number, i.name_key, t.path"
+        ))?;
+        let rows = statement.query_map([path], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
 }
 
 fn collection_summaries(
@@ -531,20 +767,23 @@ fn collection_summaries(
             "SELECT i.album_id, i.album_name, i.album_artist, t.path,
                     SUM(CASE WHEN i.duration < 1e308 THEN i.duration ELSE 0 END) OVER album,
                     COUNT(*) OVER album, MAX(json_extract(t.metadata, '$.year')) OVER album,
-                    NULLIF(MIN(COALESCE(t.added_at, 0)) OVER album, 0), MIN(t.id) OVER album
+                    NULLIF(MIN(COALESCE(t.added_at, 0)) OVER album, 0), MIN(t.id) OVER album,
+                    json_extract(t.metadata, '$.artists'),
+                    MAX(CASE WHEN json_extract(t.metadata, '$.isSingle') = 1
+                                   OR json_extract(t.metadata, '$.isEp') = 1 THEN 1 ELSE 0 END) OVER album
              FROM track_index i JOIN track t ON t.id=i.id
              WHERE i.album_id IS NOT NULL AND {ACTIVE} AND {PRIMARY}
              WINDOW album AS (PARTITION BY i.album_id)
              ORDER BY i.album_id, i.disc, i.track_number, i.name_key, t.path"
         ),
         CollectionKind::Artist => format!(
-            "SELECT a.name_key, a.name, NULL, NULL, 0, COUNT(*) OVER (PARTITION BY a.name_key), NULL, NULL, NULL FROM track_artist a
+            "SELECT a.name_key, a.name, NULL, t.path, 0, COUNT(*) OVER (PARTITION BY a.name_key), NULL, NULL, NULL, NULL, 0 FROM track_artist a
              JOIN track t ON t.id=a.track_id WHERE {ACTIVE} AND {PRIMARY} ORDER BY a.name_key, t.path"
         ),
         CollectionKind::Playlist => format!(
             "SELECT CAST(p.id AS TEXT), p.name, NULL, NULL,
                 COALESCE(SUM(CASE WHEN i.duration < 1e308 AND {ACTIVE} THEN i.duration ELSE 0 END),0),
-                COUNT(CASE WHEN {ACTIVE} THEN t.id END), NULL, NULL, NULL
+                COUNT(CASE WHEN {ACTIVE} THEN t.id END), NULL, NULL, NULL, NULL, 0
              FROM playlist p LEFT JOIN (
                 SELECT pt.playlist_id, COALESCE(v.audio_id, pt.track_id) AS track_id
                 FROM playlist_track pt LEFT JOIN track_variant v ON v.variant_id=pt.track_id
@@ -572,10 +811,26 @@ fn collection_summaries(
         {
             continue;
         }
+        let artists = row
+            .get::<_, Option<String>>(9)?
+            .map(|value| serde_json::from_str::<Vec<String>>(&value))
+            .transpose()?
+            .filter(|artists| {
+                !artists.is_empty() && subtitle.as_deref() == Some(&artists.join(", "))
+            });
+        let short_release = matches!(kind, CollectionKind::Album)
+            && (id.starts_with("single:")
+                || row.get::<_, bool>(10)?
+                || matches!(
+                    catalog::release_title(&name).1,
+                    catalog::ReleaseKind::Single | catalog::ReleaseKind::Ep
+                ));
         collections.push(CollectionSummary {
             id,
             name,
             subtitle,
+            artists,
+            short_release,
             cover_path: row.get(3)?,
             duration: row.get(4)?,
             track_count: row.get(5)?,
@@ -609,31 +864,35 @@ pub async fn library_collection_tracks(
     id: String,
 ) -> Result<Vec<Track>, String> {
     let path = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || -> LibraryResult<Vec<Track>> {
-        let db = connect(&path)?;
-        let (join, filter, sort) = match kind {
-            CollectionKind::Album => ("JOIN track_index i ON i.id=t.id", "i.album_id=?1 AND NOT EXISTS (SELECT 1 FROM track_variant WHERE variant_id=t.id)", "i.disc, i.track_number, i.name_key, t.path"),
-            CollectionKind::Artist => (
-                "JOIN track_artist a ON a.track_id=t.id JOIN track_index i ON i.id=t.id",
-                "a.name_key=?1 AND NOT EXISTS (SELECT 1 FROM track_variant WHERE variant_id=t.id)",
-                "COALESCE(json_extract(t.metadata, '$.releaseDate'),
-                          printf('%04d', json_extract(t.metadata, '$.year'))) DESC,
-                 i.album_id, i.disc, i.track_number, i.name_key, t.path",
-            ),
-            CollectionKind::Playlist => ("JOIN playlist_track p ON COALESCE((SELECT audio_id FROM track_variant WHERE variant_id=p.track_id), p.track_id)=t.id", "p.playlist_id=?1", "p.position"),
-        };
-        let mut statement = db.prepare(&format!("SELECT t.id, t.path, {} FROM track t {join} WHERE {filter} AND {ACTIVE} ORDER BY {sort}", super::versions::METADATA))?;
-        let mut rows = statement.query([id])?;
-        let mut tracks = Vec::new();
-        let mut seen = HashSet::new();
-        while let Some(row) = rows.next()? {
-            let track = track_row(row)?;
-            if seen.insert(track.id) {
-                tracks.push(track);
-            }
+    tauri::async_runtime::spawn_blocking(move || read_collection_tracks(&connect(&path)?, kind, &id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(user_error)
+}
+
+pub(super) fn read_collection_tracks(db: &Connection, kind: CollectionKind, id: &str) -> LibraryResult<Vec<Track>> {
+    let (join, filter, sort) = match kind {
+        CollectionKind::Album => ("JOIN track_index i ON i.id=t.id", "i.album_id=?1 AND NOT EXISTS (SELECT 1 FROM track_variant WHERE variant_id=t.id)", "i.disc, i.track_number, i.name_key, t.path"),
+        CollectionKind::Artist => (
+            "JOIN track_artist a ON a.track_id=t.id JOIN track_index i ON i.id=t.id",
+            "a.name_key=?1 AND NOT EXISTS (SELECT 1 FROM track_variant WHERE variant_id=t.id)",
+            "COALESCE(json_extract(t.metadata, '$.releaseDate'),
+                      printf('%04d', json_extract(t.metadata, '$.year'))) DESC,
+             i.album_id, i.disc, i.track_number, i.name_key, t.path",
+        ),
+        CollectionKind::Playlist => ("JOIN playlist_track p ON COALESCE((SELECT audio_id FROM track_variant WHERE variant_id=p.track_id), p.track_id)=t.id", "p.playlist_id=?1", "p.position"),
+    };
+    let mut statement = db.prepare(&format!("SELECT t.id, t.path, {}, {} FROM track t {join} WHERE {filter} AND {ACTIVE} ORDER BY {sort}", super::versions::METADATA, super::versions::PLAY_COUNT))?;
+    let mut rows = statement.query([id])?;
+    let mut tracks = Vec::new();
+    let mut seen = HashSet::new();
+    while let Some(row) = rows.next()? {
+        let track = track_row(row)?;
+        if seen.insert(track.id) {
+            tracks.push(track);
         }
-        Ok(tracks)
-    }).await.map_err(|error| error.to_string())?.map_err(user_error)
+    }
+    Ok(tracks)
 }
 
 #[cfg(test)]
@@ -641,6 +900,62 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn search_queue_starts_at_the_selected_result_and_falls_back_to_the_library() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("library.sqlite3");
+        Library::new(database.clone()).unwrap();
+        let mut db = connect(&database).unwrap();
+        let tx = db.transaction().unwrap();
+        for (id, name, active) in [
+            (1, "Matching first", true),
+            (2, "Matching last", true),
+            (3, "Linked result", true),
+            (4, "New import", true),
+            (5, "Unavailable", false),
+        ] {
+            let path = format!("/music/{id}.mp3");
+            let tags = Tags {
+                name: name.into(),
+                ..Tags::default()
+            };
+            tx.execute(
+                "INSERT INTO track (id, path, stamp, size, metadata) VALUES (?1, ?2, '', 0, ?3)",
+                params![id, path, serde_json::to_string(&tags).unwrap()],
+            )
+            .unwrap();
+            index(&tx, id, &path, &tags).unwrap();
+            if active {
+                tx.execute("INSERT INTO source VALUES ('/music', ?1)", [id])
+                    .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let search = |text: &str, selected, linked: &[i64]| {
+            read_search_queue(
+                &db,
+                &TrackQuery {
+                    sort: Sort::Path,
+                    text: text.into(),
+                    exclude_playlist: None,
+                },
+                selected,
+                linked.iter().copied(),
+            )
+            .unwrap()
+            .map(|tracks| tracks.into_iter().map(|track| track.id).collect::<Vec<_>>())
+        };
+        assert_eq!(search("matching", 2, &[2, 3, 3, 5]), Some(vec![2, 3, 1]));
+        assert_eq!(search("matching", 4, &[]), Some(vec![4, 1, 2]));
+        assert_eq!(search("linked", 3, &[]), Some(vec![3, 4, 1, 2]));
+        assert_eq!(search("nothing found", 4, &[]), Some(vec![4, 1, 2, 3]));
+        assert_eq!(search("matching", 5, &[]), None);
+        db.execute("DELETE FROM source WHERE track_id<>4", [])
+            .unwrap();
+        assert_eq!(search("new import", 4, &[]), Some(vec![4]));
+    }
 
     #[test]
     fn indexes_untagged_tracks_as_distinct_singles() {
@@ -670,10 +985,92 @@ mod tests {
         assert_eq!(
             albums
                 .iter()
-                .map(|album| (album.id.as_str(), album.track_count))
+                .map(|album| (album.id.as_str(), album.track_count, album.short_release))
                 .collect::<Vec<_>>(),
-            [("single:1", 1), ("single:2", 1)]
+            [("single:1", 1, true), ("single:2", 1, true)]
         );
+    }
+
+    #[test]
+    fn marks_short_releases_without_assuming_an_incomplete_album_is_a_single() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("library.sqlite3");
+        Library::new(database.clone()).unwrap();
+        let mut db = connect(&database).unwrap();
+        for (id, album, is_single, is_ep) in [
+            (1, "Album", None, false),
+            (2, "Tagged EP without a suffix", Some(false), true),
+            (3, "Legacy - EP", Some(false), false),
+            (4, "Tagged single", Some(true), false),
+        ] {
+            let tags = Tags {
+                name: format!("Track {id}"),
+                album: Some(album.into()),
+                artists: vec!["Artist, Jr.".into(), "Second".into()],
+                is_single,
+                is_ep,
+                ..Tags::default()
+            };
+            db.execute(
+                "INSERT INTO track (id, path, stamp, size, metadata) VALUES (?1, ?2, '0', 0, ?3)",
+                params![
+                    id,
+                    format!("/music/{id}.mp3"),
+                    serde_json::to_string(&tags).unwrap()
+                ],
+            )
+            .unwrap();
+            db.execute("INSERT INTO source VALUES ('/music', ?1)", [id])
+                .unwrap();
+        }
+        migrate_singles(&mut db).unwrap();
+        let releases = collection_summaries(&db, CollectionKind::Album, "").unwrap();
+        let albums: Vec<_> = releases.iter().filter(|item| !item.short_release).collect();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].name, "Album");
+        assert_eq!(
+            albums[0].artists.as_deref().unwrap(),
+            ["Artist, Jr.", "Second"]
+        );
+    }
+
+    #[test]
+    fn album_members_share_cover_candidates_in_disc_and_track_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("library.sqlite3");
+        let library = Library::new(database.clone()).unwrap();
+        let mut db = connect(&database).unwrap();
+        for (id, number, active) in [(1, 3, true), (2, 2, true), (3, 1, false)] {
+            let tags = Tags {
+                name: format!("Track {number}"),
+                album: Some("Album".into()),
+                album_artist: Some("Album Artist".into()),
+                artists: vec![format!("Artist {number}")],
+                track_number: Some(number),
+                ..Tags::default()
+            };
+            db.execute(
+                "INSERT INTO track (id, path, stamp, size, metadata) VALUES (?1, ?2, '0', 0, ?3)",
+                params![
+                    id,
+                    format!("/music/{id}.mp3"),
+                    serde_json::to_string(&tags).unwrap()
+                ],
+            )
+            .unwrap();
+            if active {
+                db.execute("INSERT INTO source VALUES ('/music', ?1)", [id])
+                    .unwrap();
+            }
+        }
+        migrate_singles(&mut db).unwrap();
+
+        for path in ["/music/1.mp3", "/music/2.mp3"] {
+            assert_eq!(
+                library.album_cover_paths(path).unwrap(),
+                ["/music/2.mp3", "/music/1.mp3"]
+            );
+        }
     }
 
     #[test]
@@ -705,6 +1102,7 @@ mod tests {
         migrate_added_date(&mut db).unwrap();
         super::super::external::migrate(&mut db).unwrap();
         super::super::versions::migrate(&mut db).unwrap();
+        super::super::migrate_play_counts(&mut db).unwrap();
 
         for text in [
             "РЕК",

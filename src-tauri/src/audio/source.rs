@@ -12,11 +12,26 @@ use symphonia::core::{
     units::TimeBase,
 };
 
+#[path = "mp4.rs"]
+mod mp4;
+
 type AudioError = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn open(path: &Path) -> Result<Box<dyn Source + Send>, AudioError> {
     // The decoders can panic while opening files with invalid stream properties.
     catch_unwind(|| -> Result<Box<dyn Source + Send>, AudioError> {
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+        {
+            return match mp4::Mp4Audio::open(path) {
+                Ok(decoder) => Ok(Box::new(decoder)),
+                Err(original) => match OpusSource::open(path)? {
+                    Some(decoder) => Ok(Box::new(decoder)),
+                    None => Err(original),
+                },
+            };
+        }
         match Decoder::try_from(File::open(path)?) {
             Ok(decoder) => Ok(Box::new(decoder)),
             Err(original) => match OpusSource::open(path)? {

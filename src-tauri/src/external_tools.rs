@@ -10,8 +10,10 @@ use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 
 mod bundle;
 pub(crate) mod downloads;
+pub(crate) mod enabled;
 pub(crate) mod ffmpeg;
 pub(crate) mod install;
+pub(crate) mod lyrica_server;
 pub(crate) mod music_metadata;
 pub(crate) mod ommr;
 pub(crate) mod preview;
@@ -36,6 +38,7 @@ const YT_DLP_BINARY: &str = if cfg!(windows) {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum YtDlpError {
     Missing,
+    Disabled,
     TimedOut,
     #[cfg(target_os = "macos")]
     GatekeeperBlocked,
@@ -143,6 +146,13 @@ async fn find_yt_dlp(app: &tauri::AppHandle) -> Result<InstalledYtDlp, YtDlpErro
 }
 
 async fn installed_yt_dlp(app: &tauri::AppHandle) -> Result<InstalledYtDlp, YtDlpError> {
+    if !enabled::tool_enabled(app, install::Tool::YtDlp) {
+        return Err(YtDlpError::Disabled);
+    }
+    prepare_yt_dlp(app).await
+}
+
+async fn prepare_yt_dlp(app: &tauri::AppHandle) -> Result<InstalledYtDlp, YtDlpError> {
     let installed = find_yt_dlp(app).await?;
     #[cfg(unix)]
     let path = &installed.path;

@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
 import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { Dialog } from '@/components/Dialog';
+import { TrackEditDialog } from '@/components/TrackEditDialog';
 import { addTrackToQueue } from '@/stores/playerStore';
 import { tracksByPaths } from '@/hooks/useLibrary';
 import type { Track } from '@/types/Track';
 import { formatPlaybackTime } from '@/utils/formatPlaybackTime';
-import { checkPlayerVideo, showPlayerVideo } from '@/utils/playerVideo';
+import { formatReleaseDate, describePlayback } from '@/utils/trackMetadata';
+import { showPlayerVideo } from '@/utils/playerVideo';
 import { toast } from '@/utils/toast';
 
 type FileInfo = { size: number; format: string };
@@ -21,26 +23,21 @@ export function TrackContextMenu() {
     data?: { track: Track; file: FileInfo };
     error?: string;
   }>();
+  const [editTrack, setEditTrack] = useState<Track>();
   const detailRequest = useRef(0);
 
   useEffect(() => {
     function open(event: MouseEvent) {
+      const handled = event.defaultPrevented;
       event.preventDefault();
       const target = event.target instanceof Element ? event.target : null;
       const track = target?.closest<HTMLElement>('[data-track-path]');
       const panel = menu.current;
       if (!panel) return;
       if (panel.matches(':popover-open')) panel.hidePopover();
-      if (!track?.dataset.trackPath) return;
+      if (handled || !track?.dataset.trackPath) return;
       path.current = track.dataset.trackPath;
-      panel.toggleAttribute('data-has-video', track.hasAttribute('data-local-video'));
-      const video = track.dataset.playerVideo;
-      const trackPath = path.current;
-      if (video && !track.hasAttribute('data-local-video')) void checkPlayerVideo(video).then((available) => {
-        if (path.current === trackPath && panel.matches(':popover-open')) {
-          panel.toggleAttribute('data-has-video', available);
-        }
-      });
+      panel.toggleAttribute('data-has-video', track.hasAttribute('data-local-video') || !!track.dataset.externalVideo);
       opener.current = target?.closest<HTMLElement>('button, a') ?? track;
       const rect = track.getBoundingClientRect();
       const keyboard = event.clientX === 0 && event.clientY === 0;
@@ -76,6 +73,16 @@ export function TrackContextMenu() {
       window.clearTimeout(progress);
       if (notice !== undefined) toast.dismiss(notice);
     });
+  };
+
+  const refreshDetails = (trackPath: string) => {
+    if (details?.data?.track.path !== trackPath) return;
+    const request = detailRequest.current;
+    void tracksByPaths([trackPath]).then(([track]) => {
+      if (request !== detailRequest.current || !track) return;
+      setDetails((current) => current?.data?.track.path === trackPath
+        ? { data: { ...current.data, track } } : current);
+    }).catch((error) => toast.error('Не удалось обновить сведения о файле', error));
   };
 
   return <>
@@ -127,6 +134,15 @@ export function TrackContextMenu() {
           if (request === detailRequest.current) setDetails({ error: String(reason) });
         });
       }}>Сведения о файле</Button>
+      <Button variant='ghost' size='small' icon='Pen' onClick={() => run(async (path) => {
+        const [track] = await tracksByPaths([path]);
+        if (!track) throw new Error('Трек отсутствует в медиатеке.');
+        setEditTrack(track);
+      }, 'Не удалось открыть редактирование')}>Редактировать метаданные</Button>
+      <Button variant='ghost' size='small' icon='Trash' onClick={() => run(async (path) => {
+        await invoke('library_trash_track', { path });
+        toast.message('Трек перемещён в корзину');
+      }, 'Не удалось переместить трек в корзину')}>В корзину</Button>
     </div>
     <Dialog open={!!details} title='Сведения о файле' onDismiss={() => {
       detailRequest.current += 1;
@@ -134,17 +150,27 @@ export function TrackContextMenu() {
     }}>
       {details && !details.data && !details.error && <LoadingIndicator label='Загрузка сведений о файле' />}
       {details?.error && <p role='alert' className='kit-error'>{details.error}</p>}
-      {details?.data && <dl className='track-file-details'>
-        <dt>Название</dt><dd>{details.data.track.name}</dd>
-        <dt>Исполнители</dt><dd>{details.data.track.artists.join(', ') || '—'}</dd>
-        <dt>Альбом</dt><dd>{details.data.track.album || '—'}</dd>
-        <dt>Год</dt><dd>{details.data.track.year ?? '—'}</dd>
-        <dt>Жанр</dt><dd>{details.data.track.genre || '—'}</dd>
-        <dt>Длительность</dt><dd>{details.data.track.duration ? formatPlaybackTime(details.data.track.duration) : '—'}</dd>
-        <dt>Формат</dt><dd>{details.data.file.format || '—'}</dd>
-        <dt>Размер</dt><dd>{fileSize.format(details.data.file.size / 1_000_000)}</dd>
-        <dt>Файл</dt><dd>{details.data.track.path}</dd>
-      </dl>}
+      {details?.data && <>
+        <dl className='track-file-details'>
+          <dt>Название</dt><dd>{details.data.track.name}</dd>
+          <dt>Исполнители</dt><dd>{details.data.track.artists.join(', ') || '—'}</dd>
+          <dt>Альбом</dt><dd>{details.data.track.album || '—'}</dd>
+          <dt>Дата релиза</dt><dd>{formatReleaseDate(details.data.track) ?? '—'}</dd>
+          {describePlayback([details.data.track]).filter(({ icon }) => icon !== 'Calendar').map(({ icon, label }) =>
+            <div className='contents' key={icon}>
+              <dt>{icon === 'Time' ? 'Прослушивания' : 'Жанры'}</dt><dd>{label}</dd>
+            </div>)}
+          <dt>Длительность</dt><dd>{details.data.track.duration ? formatPlaybackTime(details.data.track.duration) : '—'}</dd>
+          <dt>Формат</dt><dd>{details.data.file.format || '—'}</dd>
+          <dt>Размер</dt><dd>{fileSize.format(details.data.file.size / 1_000_000)}</dd>
+          <dt>Файл</dt><dd>{details.data.track.path}</dd>
+        </dl>
+        <div className='kit-dialog-actions'>
+          <Button size='small' icon='Pen' onClick={() => setEditTrack(details.data?.track)}>Редактировать метаданные</Button>
+        </div>
+      </>}
     </Dialog>
+    {editTrack && <TrackEditDialog key={editTrack.id} track={editTrack}
+      onDismiss={() => setEditTrack(undefined)} onSaved={() => refreshDetails(editTrack.path)} />}
   </>;
 }

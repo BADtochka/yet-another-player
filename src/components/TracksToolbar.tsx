@@ -14,10 +14,10 @@ const sorts: SelectOption<LibrarySort>[] = [
 export function TracksToolbar({ page }: { page: string }) {
   const { layout, sort, setLayout, setSort } = useTrackViewStore();
   const options = sorts.filter(({ value }) => value === 'name'
-    || (value === 'releaseYear' && page === '/')
-    || (value === 'added' && (page === '/' || page === '/tracks'))
+    || (value === 'releaseYear' && page === '/albums')
+    || (value === 'added' && (page === '/albums' || page === '/tracks'))
     || (value === 'created' && page === '/playlists')
-    || (value === 'artist' && (page === '/tracks' || page === '/'))
+    || (value === 'artist' && (page === '/tracks' || page === '/albums'))
     || (value === 'duration' && page !== '/artists'));
 
   return (

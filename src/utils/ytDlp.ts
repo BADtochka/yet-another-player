@@ -16,6 +16,7 @@ export const ytDlpFailureMessage = {
   missing: 'Установите yt-dlp в настройках YAP.',
   timedOut: 'yt-dlp не ответил за 45 секунд. Попробуйте ещё раз.',
   gatekeeperBlocked: 'macOS заблокировала запуск yt-dlp.',
+  disabled: 'yt-dlp отключён в настройках инструментов.',
   launchFailed: 'Не удалось запустить yt-dlp. Попробуйте ещё раз или переустановите инструмент в настройках YAP.',
   requestFailed: 'Не удалось получить результаты из внешних источников. Попробуйте ещё раз.',
   invalidQuery: 'Проверьте длину поискового запроса.',

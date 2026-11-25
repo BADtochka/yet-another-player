@@ -21,6 +21,8 @@ export function NavBar() {
   const { pathname } = location;
   const params = new URLSearchParams(location.searchStr);
   const currentQuery = pathname === '/search' ? params.get('q') ?? '' : '';
+  const isCollectionDetail = params.has('collection') || (pathname === '/albums' && params.has('release'))
+    || (pathname === '/artists' && params.has('artist'));
 
   useEffect(() => {
     if (pathname === '/search') setQuery(currentQuery);
@@ -52,7 +54,7 @@ export function NavBar() {
         if (event.target instanceof Element && event.target.closest('a')) closePlayerVideo();
       }}>
         <Tab to='/tracks' icon='Track' label='Треки' />
-        <Tab to='/' icon='Album' label='Альбомы' />
+        <Tab to='/albums' icon='Album' label='Альбомы' />
         <Tab to='/artists' icon='User' label='Исполнители' />
         <Tab to='/playlists' icon='Playlist' label='Плейлисты' />
         <Tab to='/settings' icon='Settings' label='Настройки' className='mt-auto' />
@@ -86,7 +88,7 @@ export function NavBar() {
               </div>
             )}
           </form>
-          {['/', '/tracks', '/artists', '/playlists'].includes(pathname) && !params.has('collection') && <TracksToolbar page={pathname} />}
+          {['/albums', '/tracks', '/artists', '/playlists'].includes(pathname) && !isCollectionDetail && <TracksToolbar page={pathname} />}
         </div>
       )}
     </>

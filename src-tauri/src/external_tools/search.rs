@@ -13,7 +13,7 @@ const SOURCE_LIMIT: usize = 12;
 const DETAILS_CONCURRENCY: usize = 6;
 const OUTPUT_LIMIT: u64 = 2 * 1024 * 1024;
 const METADATA: &str =
-    "%(.{id,title,track,artists,artist,creator,uploader,channel,album,description,duration,thumbnail,thumbnails})j\t%(formats.:.{ext,vcodec})j";
+    "%(.{id,title,track,artists,artist,creator,uploader,channel,album,description,duration,thumbnail,thumbnails})j\t%(formats.:.{ext,vcodec,acodec})j";
 
 #[derive(Default, Deserialize)]
 #[serde(default)]
@@ -45,6 +45,23 @@ struct Thumbnail {
 struct VideoFormat {
     ext: Option<String>,
     vcodec: Option<String>,
+    acodec: Option<String>,
+}
+
+impl VideoFormat {
+    fn is_avc_mp4(&self) -> bool {
+        self.ext.as_deref() == Some("mp4")
+            && self
+                .vcodec
+                .as_deref()
+                .is_some_and(|codec| codec.starts_with("avc1"))
+    }
+
+    fn has_aac(&self) -> bool {
+        self.acodec
+            .as_deref()
+            .is_some_and(|codec| codec.starts_with("mp4a"))
+    }
 }
 
 #[derive(Serialize)]
@@ -139,19 +156,15 @@ impl Item {
             Some(artists.join(", "))
         };
         let thumbnail = self
-            .thumbnail
-            .as_deref()
-            .filter(|text| thumbnail_url(text))
-            .or_else(|| {
-                self.thumbnails
-                    .as_deref()?
-                    .iter()
-                    .filter(|image| image.url.as_deref().is_some_and(thumbnail_url))
-                    .max_by_key(|image| {
-                        u64::from(image.width.unwrap_or(0)) * u64::from(image.height.unwrap_or(0))
-                    })
-                    .and_then(|image| image.url.as_deref())
-            });
+            .thumbnails
+            .iter()
+            .flatten()
+            .filter(|image| image.url.as_deref().is_some_and(thumbnail_url))
+            .max_by_key(|image| {
+                u64::from(image.width.unwrap_or(0)) * u64::from(image.height.unwrap_or(0))
+            })
+            .and_then(|image| image.url.as_deref())
+            .or_else(|| self.thumbnail.as_deref().filter(|text| thumbnail_url(text)));
         let clip_title = self
             .title
             .as_deref()
@@ -168,15 +181,7 @@ impl Item {
                 self.formats
                     .as_ref()
                     .filter(|formats| !formats.is_empty())
-                    .map(|formats| {
-                        formats.iter().any(|format| {
-                            format.ext.as_deref() == Some("mp4")
-                                && format
-                                    .vcodec
-                                    .as_deref()
-                                    .is_some_and(|codec| codec.starts_with("avc1"))
-                        })
-                    })
+                    .map(|formats| formats.iter().any(VideoFormat::is_avc_mp4))
             },
             duration: self
                 .duration
@@ -413,13 +418,32 @@ async fn fill_missing_artists(path: &Path, results: &mut [SearchResult]) {
     }
 }
 
-pub(super) async fn is_playable_clip(path: &Path, id: &str, url: &str) -> Result<bool, YtDlpError> {
+pub(super) async fn is_playable_clip(
+    path: &Path,
+    id: &str,
+    url: &str,
+    can_merge: bool,
+) -> Result<bool, YtDlpError> {
     match run_search(path, url, false, "1").await {
         Ok(items) => Ok(items
             .iter()
             .find(|item| item.id == id)
-            .and_then(Item::result)
-            .is_some_and(|result| result.video_available == Some(true))),
+            .filter(|item| {
+                item.result()
+                    .is_some_and(|result| result.video_available == Some(true))
+            })
+            .and_then(|item| item.formats.as_ref())
+            .is_some_and(|formats| {
+                let has_separate_audio = can_merge
+                    && formats
+                        .iter()
+                        .any(|format| format.ext.as_deref() == Some("m4a") && format.has_aac());
+                formats.iter().any(|format| {
+                    format.is_avc_mp4()
+                        && (format.has_aac()
+                            || (has_separate_audio && format.acodec.as_deref() == Some("none")))
+                })
+            })),
         Err(YtDlpError::RequestFailed) => Ok(false),
         Err(error) => Err(error),
     }
@@ -440,6 +464,7 @@ mod tests {
             formats: Some(vec![VideoFormat {
                 ext: Some("mp4".into()),
                 vcodec: Some("avc1".into()),
+                acodec: Some("mp4a.40.2".into()),
             }]),
             ..Item::default()
         };

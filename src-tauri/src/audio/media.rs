@@ -30,7 +30,8 @@ pub(super) struct Updates {
 struct Update {
     snapshot: Snapshot,
     selection: u64,
-    can_skip: bool,
+    can_go_next: bool,
+    can_go_previous: bool,
 }
 
 impl Updates {
@@ -43,7 +44,8 @@ impl Updates {
         let _ = self.sender.send(Some(Update {
             snapshot: engine.snapshot.clone(),
             selection: engine.selection,
-            can_skip: engine.order.len() > 1,
+            can_go_next: engine.order.len() > 1,
+            can_go_previous: engine.can_go_previous(),
         }));
     }
 }
@@ -330,8 +332,8 @@ impl Update {
             },
             shuffle: snapshot.shuffle,
             capabilities: Capabilities {
-                can_go_next: self.can_skip,
-                can_go_previous: self.can_skip,
+                can_go_next: self.can_go_next,
+                can_go_previous: self.can_go_previous,
                 can_seek: duration.is_some(),
             },
         }
@@ -339,6 +341,10 @@ impl Update {
 }
 
 impl Engine {
+    fn can_go_previous(&self) -> bool {
+        self.order.len() > 1 || (self.restart_on_previous && self.snapshot.path.is_some())
+    }
+
     pub(super) fn apply_media(&mut self, app: &AppHandle, event: Event, selection: u64) {
         if selection != self.selection
             && matches!(
@@ -419,7 +425,7 @@ impl Engine {
                 playing: !self.snapshot.playing,
             }),
             Event::Next if self.order.len() > 1 => Some(Action::Next),
-            Event::Previous if self.order.len() > 1 => Some(Action::Previous),
+            Event::Previous if self.can_go_previous() => Some(Action::Previous),
             Event::SeekTo(position) => self.media_seek(position.as_secs_f64(), selection),
             Event::SeekBy(offset) => self.media_seek(self.snapshot.position + offset, selection),
             Event::SetVolume(volume) if volume.is_finite() => Some(Action::Volume {
@@ -446,6 +452,27 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_previous_uses_the_same_action_for_a_single_track() {
+        let mut engine = Engine::new(Arc::default());
+        engine.set_queue(
+            vec![super::super::Track::local("track.mp3".into(), None)],
+            0,
+            false,
+        );
+        engine.snapshot.path = Some("track.mp3".into());
+        engine.snapshot.position = 5.0;
+
+        let action = engine
+            .media_action(Event::Previous, engine.selection)
+            .unwrap();
+        assert!(matches!(action, Action::Previous));
+        engine.restart_on_previous = false;
+        assert!(engine
+            .media_action(Event::Previous, engine.selection)
+            .is_none());
+    }
 
     #[test]
     fn system_seek_uses_the_published_track_and_clamps_negative_offsets() {

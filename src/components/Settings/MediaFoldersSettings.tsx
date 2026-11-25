@@ -1,19 +1,24 @@
 import { useState } from 'preact/hooks';
 import { open } from '@tauri-apps/plugin-dialog';
 import { MediaFolderRow } from '@/components/Settings/MediaFolderRow';
+import { MetadataLogDialog } from '@/components/Settings/MetadataLogDialog';
 import { SettingsSection } from '@/components/Settings/SettingsSection';
 import { Button } from '@/components/Button';
 import { Progress } from '@/components/Progress';
+import { useMetadataLookup } from '@/hooks/useLibrary';
 import { useSettingsStore } from '@/stores';
 import { cancelMusicScan, createScanId, parseMusic, type TrackScanProgress } from '@/utils/parseMusic';
 
 export const MediaFoldersSettings = () => {
   const musicFolders = useSettingsStore((state) => state.musicFolders);
   const setMusicFolders = useSettingsStore((state) => state.setMusicFolders);
+  const releaseProgress = useMetadataLookup((state) => state.releaseProgress);
   const [isAdding, setIsAdding] = useState(false);
   const [scanId, setScanId] = useState<string>();
   const [scanProgress, setScanProgress] = useState<TrackScanProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [logFolder, setLogFolder] = useState<string>();
+  const releaseLabel = releaseProgress?.phase === 'artists' ? 'Загрузка профилей исполнителей' : 'Загрузка треклистов релизов';
 
   const onAddFolder = async () => {
     setError(null);
@@ -73,6 +78,7 @@ export const MediaFoldersSettings = () => {
       {musicFolders.length > 0 && (
         <div className='settings-folder-list'>
           {musicFolders.map((path) => <MediaFolderRow key={path} path={path} disabled={isAdding || !!scanId}
+            onLog={() => setLogFolder(path)}
             onRemove={() => void onRescan(musicFolders.filter((folder) => folder !== path))} />)}
         </div>
       )}
@@ -88,7 +94,14 @@ export const MediaFoldersSettings = () => {
             onClick={() => void cancelMusicScan(scanId).catch((reason) => setError(String(reason)))}>Отменить сканирование</Button>
         </div>
       )}
+      {releaseProgress && !scanId && (
+        <div className='settings-scan'>
+          <p>{releaseLabel}</p>
+          <Progress label={releaseLabel} value={releaseProgress.current} max={releaseProgress.total} counts />
+        </div>
+      )}
       {error && <p className='kit-error' role='alert'>{error}</p>}
+      {logFolder && <MetadataLogDialog key={logFolder} folder={logFolder} onDismiss={() => setLogFolder(undefined)} />}
     </SettingsSection>
   );
 };

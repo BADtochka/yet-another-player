@@ -1,36 +1,55 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCatalogRevision } from '@/hooks/useLibrary';
-import { useEffect, useState } from 'preact/hooks';
+import { useSettingsStore } from '@/stores/settingsStore';
+import type { MetadataSource } from '@/types/Settings';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 
-export const useTrackCover = (path: string | undefined) => {
-  const [cover, setCover] = useState<{ path: string; src: string; revision: number }>();
-
-  const revision = useCatalogRevision((state) => state.revision);
+function useCover(key: string | number | undefined, revision: number, primary?: MetadataSource, albumId?: string) {
+  const requestKey = useMemo(() => ({ key, revision, primary, albumId }), [key, revision, primary, albumId]);
+  const [cover, setCover] = useState<{ requestKey: typeof requestKey; src?: string }>();
 
   useEffect(() => {
-    if (!path) return;
+    if (key === undefined) return;
 
     let active = true;
     let src: string | undefined;
-    void invoke<ArrayBuffer | number[]>('get_cover', { path }).then(async (result) => {
-      const bytes = Array.isArray(result) ? Uint8Array.from(result) : result;
-      if (active && bytes.byteLength > 0) {
-        src = URL.createObjectURL(new Blob([bytes]));
-        setCover({ path, src, revision });
-      } else if (active) {
-        const url = await invoke<string | null>('get_resolver_cover', { path });
-        if (active && url) setCover({ path, src: url, revision });
-      }
-    }).catch(() => undefined);
+    const request = primary !== undefined
+      ? invoke<ArrayBuffer | number[]>('library_album_artwork_image', { url: key, primary, albumId })
+      : typeof key === 'number'
+        ? invoke<ArrayBuffer | number[]>('library_trash_cover', { id: key })
+        : invoke<ArrayBuffer | number[]>('get_cover', { path: key });
+    void request.then((result) => {
+      const bytes = new Uint8Array(result instanceof ArrayBuffer ? result : Uint8Array.from(result).buffer);
+      if (!active) return;
+      if (bytes.length) src = URL.createObjectURL(new Blob([bytes]));
+      setCover({ requestKey, src });
+    }).catch(() => {
+      if (active) setCover({ requestKey });
+    });
 
     return () => {
       active = false;
       if (src) URL.revokeObjectURL(src);
     };
-  }, [path, revision]);
+  }, [requestKey]);
 
+  const current = cover?.requestKey === requestKey ? cover : undefined;
   return {
-    coverSrc: cover && cover.path === path && cover.revision === revision ? cover.src : undefined,
-    clearCover: () => setCover(undefined),
+    coverSrc: current?.src,
+    loading: key !== undefined && current === undefined,
+    clearCover: () => setCover((previous) => previous && { ...previous, src: undefined }),
   };
-};
+}
+
+export function useTrackCover(path: string | undefined) {
+  return useCover(path || undefined, useCatalogRevision((state) => state.revision));
+}
+
+export function useTrashCover(id: number | undefined) {
+  return useCover(id, 0);
+}
+
+export function useCatalogCover(url: string | undefined, albumId?: string, savedWhenOff = false) {
+  const primary = useSettingsStore((state) => state.metadataSource);
+  return useCover(primary === 'off' && !savedWhenOff ? undefined : url, 0, primary, albumId);
+}

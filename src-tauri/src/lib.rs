@@ -67,20 +67,36 @@ async fn get_cover(
         .join("covers");
     let roots = Arc::clone(&folders.canonical);
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        let path = std::fs::canonicalize(path).ok()?;
-        if !path.is_file() || !roots.lock().ok()?.iter().any(|root| path.starts_with(root)) {
-            return None;
+        let path = audio::library_track_path(&path, &roots).ok()?;
+        let library = app.state::<library::Library>();
+        let mut candidates = library.album_cover_paths(path.to_str()?).ok()?;
+        if let Some(first) = candidates.first() {
+            if let Ok(track) = audio::library_track_path(first, &roots) {
+                if let Some(bytes) = cover::folder_cover(&track) {
+                    return Some(bytes);
+                }
+            }
+        } else {
+            candidates.push(path.to_str()?.to_owned());
         }
-        cover::load_cover(&path, &cache)
-            .map(|(bytes, _)| bytes)
-            .or_else(|| {
-                let library = app.state::<library::Library>();
-                library
-                    .resolver_cover(&path)
-                    .is_none()
-                    .then(|| library.external_cover(&path))
-                    .flatten()
-            })
+        for candidate in candidates {
+            let Ok(candidate) = audio::library_track_path(&candidate, &roots) else {
+                continue;
+            };
+            if let Some(bytes) = cover::load_cover(&candidate, &cache).map(|(bytes, _)| bytes) {
+                return Some(bytes);
+            }
+            if let Some(bytes) = library.resolver_cover(&candidate) {
+                return Some(bytes);
+            }
+            if let Some(bytes) = library
+                .external_cover(&candidate)
+                .filter(|bytes| !bytes.is_empty())
+            {
+                return Some(bytes);
+            }
+        }
+        library.release_cover(&path)
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -126,6 +142,55 @@ async fn local_track_video(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn start_track_clip(
+    app: tauri::AppHandle,
+    audio: State<'_, audio::AudioEngine>,
+    folders: State<'_, MusicFolders>,
+    path: String,
+    video_id: Option<String>,
+    id: u64,
+    autoplay: bool,
+) -> Result<audio::Snapshot, String> {
+    let roots = Arc::clone(&folders.canonical);
+    let track_path = path.clone();
+    let file = tauri::async_runtime::spawn_blocking(move || {
+        let track = audio::library_track_path(&track_path, &roots)?;
+        let library = app.state::<library::Library>();
+        let unavailable = "Файл клипа недоступен";
+        if let Some(video_id) = video_id {
+            if !library
+                .owns_clip(&track, &video_id)
+                .map_err(|_| unavailable)?
+            {
+                return Err(unavailable);
+            }
+            let file =
+                external_tools::downloads::clip_path(&app, &video_id).map_err(|_| unavailable)?;
+            let metadata = std::fs::symlink_metadata(&file).map_err(|_| unavailable)?;
+            if metadata.is_file() && metadata.len() > 0 {
+                return Ok(file);
+            }
+            return Err(unavailable);
+        }
+        let file = library
+            .local_video(&track)
+            .map_err(|_| unavailable)?
+            .ok_or(unavailable)?;
+        audio::library_track_path(&file, &roots)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    audio
+        .control(audio::Action::StartClip {
+            id,
+            track: path,
+            file,
+            autoplay,
+        })
+        .await
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TrackFileInfo {
@@ -154,21 +219,6 @@ async fn track_file_info(
 }
 
 #[tauri::command]
-async fn get_resolver_cover(
-    app: tauri::AppHandle,
-    folders: State<'_, MusicFolders>,
-    path: String,
-) -> Result<Option<String>, String> {
-    let roots = Arc::clone(&folders.canonical);
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = audio::library_track_path(&path, &roots)?;
-        Ok(app.state::<library::Library>().resolver_cover(&path))
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
 async fn get_lyrics(
     folders: State<'_, MusicFolders>,
     app: tauri::AppHandle,
@@ -177,23 +227,7 @@ async fn get_lyrics(
     let roots = Arc::clone(&folders.canonical);
     tauri::async_runtime::spawn_blocking(move || {
         let track = audio::library_track_path(&path, &roots).ok()?;
-        let local = (|| {
-            let lyrics = std::fs::canonicalize(track.with_extension("lrc")).ok()?;
-            if !lyrics.is_file()
-                || !roots
-                    .lock()
-                    .ok()?
-                    .iter()
-                    .any(|root| track.starts_with(root) && lyrics.starts_with(root))
-            {
-                return None;
-            }
-            let file = std::fs::File::open(lyrics).ok()?;
-            let mut text = String::new();
-            use std::io::Read;
-            file.take(256 * 1024 + 1).read_to_string(&mut text).ok()?;
-            (text.len() <= 256 * 1024 && !text.trim().is_empty()).then_some(text)
-        })();
+        let local = track_lyrics::read_sidecar(&track, &roots);
         let fetched = app.state::<library::Library>().fetched_lyrics(&track);
         Some(LocalLyrics {
             sidecar: local,
@@ -252,6 +286,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(audio_environment)
         .manage(external_tools::ommr::LocalServer::default())
+        .manage(external_tools::lyrica_server::LocalLyrica::default())
         .manage(external_tools::downloads::Downloads::default())
         .manage(MusicFolders {
             canonical: Arc::clone(&roots),
@@ -261,12 +296,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            let catalog = app.path().app_data_dir()?.join("library.sqlite3");
+            let data = app.path().app_data_dir()?;
+            app.manage(external_tools::enabled::DisabledTools::load(&data));
+            let catalog = data.join("library.sqlite3");
             app.manage(
                 library::Library::new(catalog)
                     .map_err(|error| std::io::Error::other(error.to_string()))?,
             );
             app.manage(audio::AudioEngine::start(app.handle().clone(), roots)?);
+            library::trash::start_maintenance(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -283,8 +321,12 @@ pub fn run() {
             external_tools::ommr::check_ommr,
             external_tools::ommr::install_ommr,
             external_tools::ommr::test_ommr,
+            external_tools::lyrica_server::check_lyrica,
+            external_tools::lyrica_server::install_lyrica,
             external_tools::ffmpeg::check_ffmpeg,
             external_tools::ffmpeg::install_ffmpeg,
+            external_tools::enabled::disabled_external_tools,
+            external_tools::enabled::set_external_tool_enabled,
             external_tools::install::cancel_tool_install,
             external_tools::install::remove_external_tool,
             external_tools::open_macos_privacy_settings,
@@ -296,8 +338,8 @@ pub fn run() {
             external_tools::downloads::cancel_yt_dlp_download,
             get_audio_environment,
             get_cover,
-            get_resolver_cover,
             local_track_video,
+            start_track_clip,
             get_lyrics,
             reveal_track,
             track_file_info,
@@ -306,15 +348,36 @@ pub fn run() {
             genius::genius_is_configured,
             genius::genius_save_token,
             genius::genius_disconnect,
-            genius::genius_search,
+            genius::genius_lyrics,
+            library::edits::library_edit_track,
+            library::edits::library_set_lyrics_offset,
+            library::trash::library_trash_track,
+            library::trash::library_restore_track,
+            library::trash::library_trash_list,
+            library::trash::library_trash_cover,
+            library::trash::library_purge_trash,
+            library::trash::library_set_trash_retention,
             library::library_catalog_status,
             library::queries::library_tracks_page,
+            library::queries::library_playback_history,
+            library::queries::library_metadata_log,
             library::queries::library_play_tracks,
             library::queries::library_tracks_by_paths,
             library::external::library_external_tracks,
+            library::catalog::library_artist_profile,
+            library::catalog::library_artist_avatar,
+            library::catalog::library_release_details,
+            library::catalog::library_search_catalog,
+            library::catalog::library_find_release,
+            library::catalog::library_find_album_artwork,
+            library::catalog::library_album_artwork_image,
+            library::catalog::storage::library_catalog_storage,
             library::queries::library_collections,
             library::queries::library_collection_tracks,
             library::playlists::library_playlists,
+            library::playlists::library_play_playlist,
+            library::playlists::library_playlist_transition_analysis,
+            library::playlists::library_preview_playlist_transition,
             library::library_scan,
             library::library_enrich_download,
             library::library_cancel,
@@ -326,6 +389,8 @@ pub fn run() {
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<external_tools::ommr::LocalServer>().shutdown();
+                app.state::<external_tools::lyrica_server::LocalLyrica>()
+                    .shutdown();
             }
         });
 }

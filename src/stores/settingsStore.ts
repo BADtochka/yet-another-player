@@ -1,8 +1,14 @@
-import { type Settings } from '@/types/Settings';
+import { type Settings, type ToolName, type TransitionSettings } from '@/types/Settings';
 import { createTauriStore } from '@tauri-store/zustand';
 import { create } from 'zustand';
 
 type SettingsState = Settings & {
+  lyricaInstalled: boolean;
+  geniusConfigured: boolean;
+  disabledTools: ToolName[];
+  setShowAudioInfo: (enabled: boolean) => void;
+  setSeparateVideoLyrics: (enabled: boolean) => void;
+  setSuspendHiddenVideo: (enabled: boolean) => void;
   setLyricaEnabled: (enabled: boolean) => void;
   setResolver: (config: Pick<Settings, 'resolverMode' | 'resolverUrl' | 'resolverSources'>) => void;
   addMusicFolder: (path: string) => void;
@@ -10,6 +16,8 @@ type SettingsState = Settings & {
   setMusicFolders: (folders: string[]) => void;
   setVolumeNormLevel: (level: Settings['volumeNormLevel']) => void;
   setVolumeNormEnabled: (enabled: Settings['volumeNormEnabled']) => void;
+  setRestartOnPrevious: (enabled: boolean) => void;
+  setTransitions: (settings: Partial<TransitionSettings>) => void;
 };
 
 const normalizeFolder = (path: string) => path.trim();
@@ -29,14 +37,39 @@ const normalizeFolders = (folders: string[]) => {
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
+  showAudioInfo: true,
+  setShowAudioInfo: (showAudioInfo) => set({ showAudioInfo }),
+  separateVideoLyrics: false,
+  setSeparateVideoLyrics: (separateVideoLyrics) => set({ separateVideoLyrics }),
+  suspendHiddenVideo: true,
+  setSuspendHiddenVideo: (suspendHiddenVideo) => set({ suspendHiddenVideo }),
   musicFolders: [],
   lyricaEnabled: false,
+  lyricaInstalled: false,
+  geniusConfigured: false,
+  disabledTools: [],
+  metadataSource: 'auto',
+  showExternalAlbumTracks: true,
+  lyricsSource: 'auto',
   setLyricaEnabled: (lyricaEnabled) => set({ lyricaEnabled }),
   resolverUrl: '',
   resolverSources: [],
   setResolver: (config) => set({ ...config, resolverUrl: config.resolverUrl.trim() }),
   volumeNormEnabled: false,
   volumeNormLevel: 'normal',
+  restartOnPrevious: true,
+  setRestartOnPrevious: (restartOnPrevious) => set({ restartOnPrevious }),
+  transitions: {
+    enabled: false,
+    mode: 'smooth',
+    seconds: 5,
+    maxSeconds: 8,
+    preset: 'auto',
+    intensity: 0.7,
+    trimSilence: true,
+    alignBeats: true,
+  },
+  setTransitions: (settings) => set((state) => ({ transitions: { ...state.transitions, ...settings } })),
   addMusicFolder: (path) => {
     const normalized = normalizeFolder(path);
 
@@ -57,13 +90,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setVolumeNormLevel: (volumeNormLevel) => set({ volumeNormLevel }),
 }));
 
+export const lyricaReady = (settings: SettingsState) => settings.lyricaInstalled && settings.lyricaEnabled && !settings.disabledTools.includes('lyrica');
+
+export const geniusReady = (settings: SettingsState) => settings.geniusConfigured && !settings.disabledTools.includes('genius');
+
 export const settingsStoreHandler = createTauriStore('settings', useSettingsStore, {
   saveOnChange: true,
-  filterKeys: ['lyricaEnabled', 'musicFolders', 'volumeNormLevel', 'volumeNormEnabled', 'resolverUrl', 'resolverMode', 'resolverSources'],
+  filterKeys: ['showAudioInfo', 'separateVideoLyrics', 'suspendHiddenVideo', 'lyricaEnabled', 'musicFolders', 'volumeNormLevel', 'volumeNormEnabled', 'restartOnPrevious', 'resolverUrl', 'resolverMode', 'resolverSources', 'metadataSource', 'showExternalAlbumTracks', 'lyricsSource', 'transitions'],
   filterKeysStrategy: 'pick',
 });
 
 export const metadataResolverConfig = () => {
-  const { resolverMode, resolverUrl, resolverSources } = useSettingsStore.getState();
-  return { mode: resolverMode ?? (resolverUrl ? 'remote' : 'off'), url: resolverUrl || null, sources: resolverSources };
+  const { resolverMode, resolverUrl, resolverSources, metadataSource, disabledTools } = useSettingsStore.getState();
+  return {
+    mode: disabledTools.includes('ommr') ? 'off' : resolverMode ?? (resolverUrl ? 'remote' : 'off'),
+    url: resolverUrl || null,
+    sources: resolverSources,
+    primary: metadataSource,
+  };
 };

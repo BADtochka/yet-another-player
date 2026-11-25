@@ -20,12 +20,13 @@ const providers = [
   [['yt', 'music'].join(''), 'Музыкальный каталог'],
 ] as const;
 
-export function MetadataSettings({ installed, onDismiss }: {
+export function MetadataSettings({ installed, initialMode, onDismiss }: {
   installed: boolean;
+  initialMode?: ResolverMode;
   onDismiss: () => void;
 }) {
   const { resolverMode, resolverUrl, resolverSources, setResolver } = useSettingsStore();
-  const [mode, setMode] = useState<ResolverMode>(resolverMode ?? (resolverUrl ? 'remote' : 'off'));
+  const [mode, setMode] = useState<ResolverMode>(initialMode ?? resolverMode ?? (resolverUrl ? 'remote' : 'off'));
   const [url, setUrl] = useState(resolverUrl);
   const [sources, setSources] = useState(resolverSources);
   const [checking, setChecking] = useState(false);

@@ -2,15 +2,21 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useId, useState } from 'preact/hooks';
 import { Button } from '@/components/Button';
 import { Dialog } from '@/components/Dialog';
-import { Icon } from '@/components/Icons/Icon';
 import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { Input } from '@/components/Input';
+import { Icon } from '@/components/Icons/Icon';
+import { Switch } from '@/components/Switch';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { setExternalToolEnabled } from '@/utils/externalTools';
 import { geniusDisconnect, geniusError, geniusIsConfigured, geniusSaveToken } from '@/utils/genius';
 
 const CLIENTS_URL = 'https://genius.com/api-clients/new';
+const DOCS_URL = 'https://docs.genius.com/';
 
 export function GeniusSettings() {
   const [configured, setConfigured] = useState<boolean>();
+  const disabled = useSettingsStore((state) => state.disabledTools.includes('genius'));
+  const [toggling, setToggling] = useState(false);
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<'save' | 'disconnect'>();
   const [token, setToken] = useState('');
@@ -43,6 +49,7 @@ export function GeniusSettings() {
       if (action === 'save') await geniusSaveToken(token);
       else await geniusDisconnect();
       setConfigured(action === 'save');
+      useSettingsStore.setState({ geniusConfigured: action === 'save' });
       setStatusError(undefined);
       dismiss();
     } catch (reason) {
@@ -52,18 +59,38 @@ export function GeniusSettings() {
     }
   }
 
+  async function toggle(enabled: boolean) {
+    setToggling(true);
+    setStatusError(undefined);
+    try {
+      await setExternalToolEnabled('genius', enabled);
+    } catch (reason) {
+      setStatusError(String(reason));
+    } finally {
+      setToggling(false);
+    }
+  }
+
   return (
     <div className='settings-tool'>
       <div className='settings-row'>
         <div className='settings-row-info'>
-          <h3>Genius</h3>
-          <p>Поиск страниц с текстами песен на Genius</p>
+          <h4><button type='button' className='settings-source' aria-label='Документация Genius API'
+            onClick={() => void openUrl(DOCS_URL).catch(() => setStatusError('Не удалось открыть документацию Genius.'))}>
+            Genius <Icon name='Open' size={16} />
+          </button></h4>
+          <p>Поиск текстов песен и метаданных по токену</p>
         </div>
         <div className='settings-row-actions'>
           {configured === undefined && !statusError && <LoadingIndicator label='Проверка подключения Genius' />}
-          {configured && <span className='settings-installed'><Icon name='Check' />Подключено</span>}
-          <Button size='icon' icon='Settings' aria-label='Настроить Genius' title='Настроить Genius'
-            disabled={configured === undefined && !statusError} onClick={() => setOpen(true)} />
+          {configured
+            ? <Button size='icon' icon='Settings' aria-label='Настроить Genius' title='Настроить Genius' onClick={() => setOpen(true)} />
+            : <Button variant='primary' disabled={configured === undefined && !statusError} onClick={() => setOpen(true)}>
+              Подключить
+            </Button>}
+          {toggling && <LoadingIndicator label='Изменение состояния Genius' />}
+          {configured && <Switch label='Использовать Genius' checked={!disabled}
+            onChange={(enabled) => void toggle(enabled)} disabled={toggling || Boolean(pending)} />}
         </div>
       </div>
       {statusError && <p className='kit-error' role='alert'>{statusError}</p>}
@@ -92,9 +119,9 @@ export function GeniusSettings() {
           {error && <p id={errorId} className='kit-error' role='alert'>{error}</p>}
           <div className='kit-dialog-actions'>
             {configured && <Button variant='danger' pending={pending === 'disconnect'} disabled={Boolean(pending)}
-              onClick={() => void update('disconnect')}>Отключить</Button>}
+              onClick={() => void update('disconnect')}>Удалить токен</Button>}
             <Button type='submit' variant='primary' pending={pending === 'save'} disabled={Boolean(pending) || !token.trim()}>
-              Сохранить
+              {configured ? 'Сохранить' : 'Подключить'}
             </Button>
           </div>
         </form>

@@ -1,9 +1,27 @@
 import { create } from 'zustand';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { logError, logInfo } from '@/utils/appLogs';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { checkYtDlp, clearYtDlpCheck, getYtDlpLocation, YtDlpError, ytDlpFailureMessage } from '@/utils/ytDlp';
 
-export type ExternalTool = 'yt-dlp' | 'ffmpeg' | 'ommr';
+import type { ToolName } from '@/types/Settings';
+
+export type ExternalTool = Exclude<ToolName, 'genius'>;
+
+export async function loadDisabledTools() {
+  const disabledTools = await invoke<ToolName[]>('disabled_external_tools');
+  useSettingsStore.setState({ disabledTools });
+}
+
+export async function setExternalToolEnabled(tool: ToolName, enabled: boolean) {
+  try {
+    await invoke('set_external_tool_enabled', { tool, enabled });
+    if (tool === 'lyrica') useSettingsStore.getState().setLyricaEnabled(enabled);
+    if (tool === 'yt-dlp') clearYtDlpCheck();
+  } finally {
+    await loadDisabledTools();
+  }
+}
 
 export type ExternalToolStatus = {
   tool: ExternalTool;
@@ -22,6 +40,11 @@ export type ExternalToolInstallProgress = {
 
 type BundleProgress = Omit<ExternalToolInstallProgress, 'tool'>;
 type FfmpegStatus = Omit<ExternalToolStatus, 'tool'>;
+const localToolCommands = {
+  ffmpeg: { check: 'check_ffmpeg', install: 'install_ffmpeg' },
+  ommr: { check: 'check_ommr', install: 'install_ommr' },
+  lyrica: { check: 'check_lyrica', install: 'install_lyrica' },
+} as const;
 
 const getYtDlpStatus = async (fresh = false): Promise<ExternalToolStatus> => {
   let path: string;
@@ -34,6 +57,9 @@ const getYtDlpStatus = async (fresh = false): Promise<ExternalToolStatus> => {
     throw error;
   }
 
+  if (useSettingsStore.getState().disabledTools.includes('yt-dlp')) {
+    return { tool: 'yt-dlp', installed: true, version: null, path };
+  }
   const result = await checkYtDlp(fresh);
   return {
     tool: 'yt-dlp',
@@ -46,7 +72,9 @@ const getYtDlpStatus = async (fresh = false): Promise<ExternalToolStatus> => {
 
 export const getExternalToolStatus = async (tool: ExternalTool, fresh = false): Promise<ExternalToolStatus> => {
   if (tool === 'yt-dlp') return getYtDlpStatus(fresh);
-  return { tool, ...await invoke<FfmpegStatus>(tool === 'ommr' ? 'check_ommr' : 'check_ffmpeg') };
+  const status = await invoke<FfmpegStatus>(localToolCommands[tool].check);
+  if (tool === 'lyrica') useSettingsStore.setState({ lyricaInstalled: status.installed });
+  return { tool, ...status };
 };
 
 type ToolInstall = { id: string; progress?: ExternalToolInstallProgress; cancelling: boolean };
@@ -67,7 +95,15 @@ export async function installExternalTool(tool: ExternalTool): Promise<ExternalT
 
   logInfo('Installing external tool', { tool });
   try {
-    if (tool !== 'yt-dlp') return { tool, ...await invoke<FfmpegStatus>(tool === 'ommr' ? 'install_ommr' : 'install_ffmpeg', { id, onProgress: progress }) };
+    if (tool !== 'yt-dlp') {
+      const status = await invoke<FfmpegStatus>(localToolCommands[tool].install, { id, onProgress: progress });
+      if (tool === 'lyrica') {
+        useSettingsStore.setState((state) => ({
+          lyricaInstalled: status.installed, lyricaEnabled: state.lyricaInstalled ? state.lyricaEnabled : status.installed,
+        }));
+      }
+      return { tool, ...status };
+    }
     const bundle = await invoke<BundleProgress>('install_yt_dlp_bundle', { id, onProgress: progress });
     progress.onmessage({ ...bundle, status: 'checking' });
     const status = await getYtDlpStatus(true);

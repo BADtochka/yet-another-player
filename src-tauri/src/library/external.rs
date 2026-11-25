@@ -129,12 +129,13 @@ impl Library {
     ) -> LibraryResult<HashMap<String, Track>> {
         let db = connect(&self.database)?;
         let mut statement = db.prepare(&format!(
-            "SELECT t.id, t.path, {} FROM external_download y
+            "SELECT t.id, t.path, {}, {} FROM external_download y
              LEFT JOIN track_variant r ON r.variant_id=y.track_id
              JOIN track t ON t.id=COALESCE(r.audio_id, y.track_id)
              WHERE y.video_id=?1 AND EXISTS (SELECT 1 FROM source WHERE track_id=t.id)
              ORDER BY t.id",
-            super::versions::METADATA
+            super::versions::METADATA,
+            super::versions::PLAY_COUNT
         ))?;
         let mut found = HashMap::new();
         for id in ids {
@@ -149,15 +150,21 @@ impl Library {
         }
         if found.len() < ids.len() {
             // Older versions only kept the video ID in the filename.
-            let mut legacy = db.prepare(
-                "SELECT t.id, t.path, t.metadata FROM track t
-                 WHERE instr(t.path, ' [')>0 AND EXISTS (SELECT 1 FROM source WHERE track_id=t.id)
-                 ORDER BY t.id",
-            )?;
+            let mut legacy = db.prepare(&format!(
+                "SELECT t.id, t.path, {}, {}, original.path FROM track original
+                 LEFT JOIN track_variant r ON r.variant_id=original.id
+                 JOIN track t ON t.id=COALESCE(r.audio_id, original.id)
+                 WHERE instr(original.path, ' [')>0
+                   AND EXISTS (SELECT 1 FROM source WHERE track_id=original.id)
+                 ORDER BY original.id",
+                super::versions::METADATA,
+                super::versions::PLAY_COUNT
+            ))?;
             let mut rows = legacy.query([])?;
             while let Some(row) = rows.next()? {
                 let path: String = row.get(1)?;
-                let Some(id) = legacy_id(Path::new(&path)) else {
+                let original: String = row.get(4)?;
+                let Some(id) = legacy_id(Path::new(&original)) else {
                     continue;
                 };
                 if ids.iter().any(|candidate| candidate == id)
@@ -210,7 +217,7 @@ fn available_track(path: &str, roots: &[PathBuf]) -> bool {
 }
 
 fn linked_track(row: &rusqlite::Row<'_>, path: String) -> LibraryResult<Track> {
-    Track::from_metadata(row.get(0)?, path, &row.get::<_, String>(2)?)
+    Track::from_metadata(row.get(0)?, path, &row.get::<_, String>(2)?, row.get(3)?)
 }
 
 #[tauri::command]

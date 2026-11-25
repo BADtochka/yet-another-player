@@ -1,8 +1,14 @@
+use std::{path::Path, time::Duration};
+
 use serde::Serialize;
 use tempfile::TempPath;
 use tokio::sync::oneshot;
 
-use super::{AudioEngine, Engine, Playback, Request};
+use super::{
+    open_decoder,
+    transitions::{fade_decks, Plan},
+    AudioEngine, Engine, Playback, Request,
+};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +32,15 @@ pub(super) struct Preview {
 
 struct PreviewAudio {
     playback: Playback,
-    file: TempPath,
+    file: Option<TempPath>,
+    mix: Option<MixPreview>,
+}
+
+struct MixPreview {
+    incoming: Playback,
+    plan: Plan,
+    delay: f64,
+    started: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -90,6 +104,68 @@ impl Engine {
             eprintln!("Audio preview: {error}");
             StartError::Failed
         })?;
+        self.activate_preview(
+            PreviewAudio {
+                playback,
+                file: Some(file),
+                mix: None,
+            },
+            duration,
+        );
+        Ok(())
+    }
+
+    pub(super) fn preview_transition(
+        &mut self,
+        outgoing: &Path,
+        incoming: &Path,
+        mut plan: Plan,
+    ) -> Result<(), String> {
+        let mut tail = open_decoder(outgoing, 0.0)?;
+        let head = open_decoder(incoming, plan.cue).or_else(|_| open_decoder(incoming, 0.0))?;
+        let end = (tail
+            .duration
+            .ok_or("Не удалось определить длительность трека")?
+            - plan.trim)
+            .max(0.0);
+        let incoming_available = head
+            .duration
+            .map_or(plan.seconds + 2.0, |duration| duration - head.position);
+        plan.seconds = plan.seconds.min(end).min(incoming_available * 0.5);
+        if plan.seconds < 0.12 {
+            return Err("Для этого перехода недостаточно аудио".into());
+        }
+        let start = (end - plan.seconds - 2.0).max(0.0);
+        let delay = end - plan.seconds - start;
+        if start > 0.0 {
+            let position =
+                Duration::try_from_secs_f64(start).map_err(|_| "Некорректная позиция")?;
+            tail.decoder
+                .try_seek(position)
+                .map_err(|_| "Не удалось перемотать трек для прослушивания")?;
+            tail.position = start;
+        }
+        let (playback, _) = self.attach_decoder(tail)?;
+        let (incoming, _) = self.attach_decoder(head)?;
+        let duration = delay + (plan.seconds + 2.0).min(incoming_available);
+        let mix = MixPreview {
+            incoming,
+            plan,
+            delay,
+            started: false,
+        };
+        self.activate_preview(
+            PreviewAudio {
+                playback,
+                file: None,
+                mix: Some(mix),
+            },
+            Some(duration),
+        );
+        Ok(())
+    }
+
+    fn activate_preview(&mut self, audio: PreviewAudio, duration: Option<f64>) {
         let resume_local = self.snapshot.playing;
         self.set_local_playing(false);
         if let Some(playback) = &self.playback {
@@ -97,7 +173,7 @@ impl Engine {
         }
         if let Some(preview) = &mut self.preview {
             preview.resume_local = resume_local;
-            preview.audio = Some(PreviewAudio { playback, file });
+            preview.audio = Some(audio);
         }
         if let Some(preview) = &mut self.snapshot.preview {
             preview.loading = false;
@@ -106,7 +182,6 @@ impl Engine {
         self.change_selection();
         self.apply_preview_volume();
         self.set_preview_playing(true);
-        Ok(())
     }
 
     pub(super) fn close_preview(&mut self, resume: bool) {
@@ -138,6 +213,13 @@ impl Engine {
         } else {
             audio.playback.player.pause();
         }
+        if let Some(mix) = &audio.mix {
+            if playing && mix.started {
+                mix.incoming.player.play();
+            } else {
+                mix.incoming.player.pause();
+            }
+        }
         if let Some(preview) = &mut self.snapshot.preview {
             preview.playing = playing;
         }
@@ -161,7 +243,9 @@ impl Engine {
         else {
             return;
         };
-        let path = audio.file.to_path_buf();
+        let Some(path) = audio.file.as_ref().map(|file| file.to_path_buf()) else {
+            return;
+        };
         match self.build_playback(&path, position.clamp(0.0, (duration - 0.01).max(0.0))) {
             Ok((playback, _)) => {
                 if let Some(preview) = &mut self.snapshot.preview {
@@ -190,6 +274,9 @@ impl Engine {
         {
             let volume = self.snapshot.volume * 10_f32.powf(-2.67 / 20.0);
             audio.playback.player.set_volume(volume);
+            if let Some(mix) = &audio.mix {
+                mix.incoming.player.set_volume(volume);
+            }
         }
     }
 
@@ -203,6 +290,39 @@ impl Engine {
             return false;
         };
         audio.playback.fill();
+        if let Some(mix) = &mut audio.mix {
+            if !mix.started
+                && preview.playing
+                && audio.playback.position() - audio.playback.anchor >= mix.delay
+            {
+                fade_decks(&audio.playback, &mix.incoming, mix.plan);
+                mix.started = true;
+                mix.incoming.player.play();
+            }
+            let (position, ended) = if mix.started {
+                mix.incoming.fill();
+                (
+                    mix.delay + mix.incoming.position() - mix.incoming.anchor,
+                    mix.incoming.player.empty(),
+                )
+            } else {
+                (
+                    audio.playback.position() - audio.playback.anchor,
+                    audio.playback.player.empty(),
+                )
+            };
+            preview.position = position;
+            if preview.playing
+                && (ended
+                    || preview
+                        .duration
+                        .is_some_and(|duration| position >= duration))
+            {
+                self.close_preview(true);
+                return true;
+            }
+            return false;
+        }
         let position = audio.playback.position();
         preview.position = preview
             .duration
@@ -274,5 +394,66 @@ mod tests {
         );
         assert!(!path.exists());
         assert!(engine.claim_preview(second).is_some());
+    }
+
+    #[test]
+    fn listening_to_a_transition_leaves_the_original_track_at_its_position() {
+        use rodio::{buffer::SamplesBuffer, mixer::mixer, ChannelCount, SampleRate};
+
+        let rate = SampleRate::new(8_000).unwrap();
+        let channels = ChannelCount::new(2).unwrap();
+        let (mixer, mut output) = mixer(channels, rate);
+        let deck = |frame: [f32; 2]| {
+            Playback::connect(
+                &mixer,
+                super::super::DecoderReady {
+                    decoder: Box::new(SamplesBuffer::new(channels, rate, frame.repeat(16_000))),
+                    position: 0.0,
+                    duration: Some(2.0),
+                },
+            )
+            .unwrap()
+        };
+        let mut engine = Engine::new(Arc::default());
+        engine.playback = Some(deck([0.25, 0.25]));
+        engine.snapshot.path = Some("original".into());
+        engine.snapshot.volume = 1.0;
+        engine.set_local_playing(true);
+        engine.prepare_preview("Transition".into(), String::new());
+        let plan = serde_json::from_str::<super::super::PairSettings>(
+            r#"{"preset":"linear","seconds":0.5,"trim":0,"cue":0,"intensity":0.7}"#,
+        )
+        .unwrap()
+        .into();
+        engine.activate_preview(
+            PreviewAudio {
+                playback: deck([0.5, 0.0]),
+                file: None,
+                mix: Some(MixPreview {
+                    incoming: deck([0.0, 0.5]),
+                    plan,
+                    delay: 0.25,
+                    started: false,
+                }),
+            },
+            Some(0.95),
+        );
+        let mut mixed_frame = None;
+        for frame in 0..=8_000 {
+            if frame % 80 == 0 {
+                engine.tick_preview();
+            }
+            let left = output.next().unwrap();
+            let right = output.next().unwrap();
+            if frame == 4_000 {
+                mixed_frame = Some((left, right));
+            }
+        }
+        let (left, right) = mixed_frame.unwrap();
+        assert!((0.1..0.4).contains(&left) && (0.1..0.4).contains(&right));
+        assert!(engine.active_preview().is_none());
+        assert!(engine.snapshot.playing);
+        assert_eq!(engine.snapshot.path.as_deref(), Some("original"));
+        assert_eq!(engine.snapshot.position, 0.0);
     }
 }

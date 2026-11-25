@@ -4,17 +4,19 @@ import { QueuePanel } from '@/components/QueuePanel';
 import { SeekBar } from '@/components/SeekBar';
 import { SliderFrame } from '@/components/Slider';
 import { TrackPlaying } from '@/components/TrackPlaying';
+import { Tooltip } from '@/components/Tooltip';
 import { VolumeBar } from '@/components/VolumeBar';
 import { Button } from '@/components/Button';
+import { AdvancedTransitionsButton } from '@/components/AdvancedTransitionsButton';
 import { Icon } from '@/components/Icons/Icon';
 import { useMusicDownload } from '@/utils/musicDownload';
-import { closePlayerVideo, showPlayerVideo, trackVideoId, usePlayerVideo, useVideoAvailable } from '@/utils/playerVideo';
+import { closePlayerVideo, showPlayerVideo, trackVideoId, usePlayerVideo } from '@/utils/playerVideo';
 import { toast } from '@/utils/toast';
 import { usePlayerStore } from '@/stores';
 
 import { formatPlaybackTime } from '@/utils/formatPlaybackTime';
 
-export const PlayerControls = () => {
+export const PlayerControls = ({ ready }: { ready: boolean }) => {
   const { pathname, href } = useLocation();
   const navigate = useNavigate();
   const lyricsOpen = pathname === '/lyrics';
@@ -24,7 +26,7 @@ export const PlayerControls = () => {
   }, [lyricsOpen, pathname, href]);
 
   const currentTrack = usePlayerStore((state) => state.currentTrack);
-  const videoAvailable = useVideoAvailable(currentTrack?.hasLocalVideo ? undefined : trackVideoId(currentTrack));
+  const videoAvailable = !!trackVideoId(currentTrack);
   const videoOpen = usePlayerVideo((state) => !!state.request && state.request.path === currentTrack?.path);
   const downloading = useMusicDownload((state) => !!state.active);
   const playing = usePlayerStore((state) => state.playing);
@@ -92,15 +94,19 @@ export const PlayerControls = () => {
       </div>
       <div className='player-tools'>
         {currentTrack && (currentTrack.hasLocalVideo || videoAvailable || videoOpen) && <Button className='player-tool' variant='ghost' size='icon'
-          icon={videoOpen ? 'Melody' : 'Video'} aria-label={videoLabel} title={videoLabel} disabled={!videoOpen && downloading}
+          icon={videoOpen ? 'Melody' : 'Video'} aria-label={videoLabel} tooltip={videoLabel} disabled={!videoOpen && downloading}
           onClick={() => videoOpen ? closePlayerVideo()
             : void showPlayerVideo(currentTrack).catch((error) => toast.error('Не удалось открыть видео', error))} />}
         {currentTrack && <Button className='player-tool' variant='ghost' size='icon' icon='Lyrics'
-          aria-label={lyricsLabel} title={lyricsLabel} aria-expanded={lyricsOpen}
+          aria-label={lyricsLabel} tooltip={lyricsLabel} aria-expanded={lyricsOpen}
           onClick={() => void (lyricsOpen ? navigate({ href: previousPage.current }) : navigate({ to: '/lyrics' }))} />}
-        <button ref={queueTrigger} type='button' className='player-tool' aria-label='Очередь' title='Очередь'
+        <AdvancedTransitionsButton ready={ready} />
+        <button ref={queueTrigger} type='button' className='player-tool' aria-label='Очередь'
           aria-expanded={queueOpen} aria-controls={queueOpen ? 'playback-queue' : undefined}
-          onClick={() => { closePlayerVideo(); setQueueOpen(!queueOpen); }}><Icon name='Queue' /></button>
+          onClick={() => { closePlayerVideo(); setQueueOpen(!queueOpen); }}>
+          <Icon name='Queue' />
+          <Tooltip label='Очередь' placement='top' />
+        </button>
         <VolumeBar className='player-volume' value={volume} onChange={setVolume} />
         {queueOpen && <QueuePanel close={closeQueue} trigger={queueTrigger} />}
       </div>

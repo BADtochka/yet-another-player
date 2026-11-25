@@ -51,6 +51,7 @@ struct Candidate {
     id: i64,
     tags: Tags,
     local_video: bool,
+    explicit_clip: bool,
     clip_id: Option<String>,
 }
 
@@ -77,18 +78,83 @@ fn compatible(audio: &Candidate, video: &Candidate) -> bool {
         return a.eq_ignore_ascii_case(b);
     }
     if let (Some(a), Some(b)) = (audio.tags.album_name(), video.tags.album_name()) {
-        if !a.eq_ignore_ascii_case(b) {
+        let same_release = super::catalog::release_title(a).1 == super::catalog::release_title(b).1
+            && super::catalog::release_key(a) == super::catalog::release_key(b);
+        let standalone_clip = video.explicit_clip
+            && super::catalog::release_key(b) == super::catalog::release_key(&video.tags.name);
+        if !same_release && !standalone_clip {
             return false;
         }
     }
     match (audio.tags.duration, video.tags.duration) {
-        (Some(a), Some(b)) => (a - b).abs() <= 3.0,
+        (Some(a), Some(b)) if a.is_finite() && b.is_finite() && a > 0.0 && b > 0.0 => {
+            let tolerance = if video.explicit_clip {
+                (a * 0.2).clamp(3.0, 30.0)
+            } else {
+                3.0
+            };
+            (a - b).abs() <= tolerance
+        }
         _ => false,
     }
 }
 
+struct AlbumMember {
+    id: i64,
+    name: String,
+    artist: String,
+    explicit_artist: bool,
+    year: Option<u16>,
+}
+
+fn group_albums(
+    tx: &Transaction<'_>,
+    albums: HashMap<(String, super::catalog::ReleaseKind, String), Vec<AlbumMember>>,
+) -> LibraryResult<()> {
+    let mut update = tx.prepare(
+        "UPDATE track_index SET album_id=?2, album_name=?3, album_artist=?4
+         WHERE id=?1 AND (album_id<>?2 OR album_name<>?3 OR album_artist<>?4)",
+    )?;
+    let has_artwork = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='release_artwork')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    for members in albums.values() {
+        let year = members.iter().find_map(|member| member.year);
+        let conflict = members
+            .iter()
+            .filter_map(|member| member.year)
+            .any(|candidate| Some(candidate) != year);
+        let canonical = members
+            .iter()
+            .min_by_key(|member| (member.name.len(), member.id));
+        let credit = members
+            .iter()
+            .min_by_key(|member| (!member.explicit_artist, member.artist.len(), member.id));
+        for member in members {
+            let display = canonical.filter(|_| !conflict).unwrap_or(member);
+            let artist = credit.filter(|_| !conflict).unwrap_or(member);
+            let key = serde_json::to_string(&[&display.name, &display.artist])?;
+            let changed = update.execute(params![member.id, key, display.name, artist.artist])?;
+            if changed > 0 && has_artwork {
+                let previous = serde_json::to_string(&[&member.name, &member.artist])?;
+                if previous != key {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO release_artwork (album_id, url)
+                         SELECT ?1, url FROM release_artwork WHERE album_id=?2",
+                        params![key, previous],
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn rebuild(tx: &Transaction<'_>) -> LibraryResult<()> {
     let mut groups = HashMap::<_, Vec<Candidate>>::new();
+    let mut albums = HashMap::<_, Vec<AlbumMember>>::new();
     let mut statement = tx.prepare(
         "SELECT t.id, t.path, t.metadata, y.metadata FROM track t
          LEFT JOIN external_download y ON y.track_id=t.id
@@ -100,36 +166,77 @@ pub(super) fn rebuild(tx: &Transaction<'_>) -> LibraryResult<()> {
         let id = row.get(0)?;
         let path: String = row.get(1)?;
         let mut tags: Tags = serde_json::from_str(&row.get::<_, String>(2)?)?;
-        let downloaded: Option<String> = row.get(3)?;
-        let local_video = Path::new(&path)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
-            && has_video(Path::new(&path));
-        let clip_id = tags.external_video_id.clone();
+        let downloaded = row
+            .get::<_, Option<String>>(3)?
+            .and_then(|data| serde_json::from_str::<super::external::DownloadTags>(&data).ok());
+        if let Some(name) = tags.album_name() {
+            let explicit = tags
+                .album_artist
+                .as_deref()
+                .map(str::trim)
+                .filter(|credit| !credit.is_empty());
+            let artist = explicit
+                .map(str::to_owned)
+                .unwrap_or_else(|| tags.artists.join(", "));
+            let lead = artist
+                .split([',', ';'])
+                .next()
+                .unwrap_or("")
+                .split(" & ")
+                .next()
+                .unwrap_or("");
+            let lead = super::catalog::normalized(lead);
+            let key = super::catalog::release_key(name);
+            if !lead.is_empty() && !key.is_empty() {
+                albums
+                    .entry((key, super::catalog::release_title(name).1, lead))
+                    .or_default()
+                    .push(AlbumMember {
+                        id,
+                        name: name.to_owned(),
+                        artist,
+                        explicit_artist: explicit.is_some(),
+                        year: tags.year,
+                    });
+            }
+        }
+        let local_video = tags.has_local_video
+            || (Path::new(&path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+                && has_video(Path::new(&path)));
+        let explicit_clip = local_video
+            || tags.clip_video_id.is_some()
+            || downloaded.as_ref().is_some_and(|download| download.is_clip)
+            || crate::external_tools::music_metadata::has_clip_label(&tags.name)
+            || Path::new(&path)
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .is_some_and(crate::external_tools::music_metadata::has_clip_label);
+        let clip_id = tags
+            .clip_video_id
+            .clone()
+            .or_else(|| tags.external_video_id.clone())
+            .filter(|_| {
+                explicit_clip
+                    || downloaded.as_ref().is_some_and(|download| {
+                        download
+                            .album
+                            .as_deref()
+                            .is_none_or(|album| album.trim().is_empty())
+                    })
+            });
         let normalized =
             crate::external_tools::music_metadata::normalize(&tags.name, &mut tags.artists);
         let identity = key(&normalized, &tags.artists);
         if identity.0.is_empty() || identity.1.is_empty() {
             continue;
         }
-        // Music releases carry an album. Uploads without one can be clip counterparts.
-        let clip_id = clip_id.filter(|_| {
-            local_video
-                || downloaded.as_ref().is_some_and(|data| {
-                    serde_json::from_str::<super::external::DownloadTags>(data).is_ok_and(
-                        |download| {
-                            download
-                                .album
-                                .as_deref()
-                                .is_none_or(|album| album.trim().is_empty())
-                        },
-                    )
-                })
-        });
         groups.entry(identity).or_default().push(Candidate {
             id,
             tags,
             local_video,
+            explicit_clip,
             clip_id,
         });
     }
@@ -142,8 +249,9 @@ pub(super) fn rebuild(tx: &Transaction<'_>) -> LibraryResult<()> {
             .filter(|item| item.local_video || item.clip_id.is_some())
         {
             let mut candidates = group.iter().filter(|audio| {
-                !audio.local_video
-                    && audio.clip_id.is_none()
+                !audio.explicit_clip
+                    && (audio.clip_id.is_none()
+                        || (video.explicit_clip && audio.tags.album_name().is_some()))
                     && audio.id != video.id
                     && (video.local_video || audio.tags.external_video_id != video.clip_id)
                     && compatible(audio, video)
@@ -161,7 +269,7 @@ pub(super) fn rebuild(tx: &Transaction<'_>) -> LibraryResult<()> {
             }
         }
     }
-    Ok(())
+    group_albums(tx, albums)
 }
 
 pub(super) fn audio_id(db: &Connection, id: i64) -> rusqlite::Result<i64> {
@@ -175,7 +283,15 @@ pub(super) fn audio_id(db: &Connection, id: i64) -> rusqlite::Result<i64> {
         .unwrap_or(id))
 }
 
+pub(super) const PLAY_COUNT: &str = "t.play_count + COALESCE((
+    SELECT SUM(variant.play_count) FROM track_variant r
+    JOIN track variant ON variant.id=r.variant_id WHERE r.audio_id=t.id
+), 0)";
+
 pub(super) const METADATA: &str = "json_patch(t.metadata, json_object(
+    'catalogAlbumId', (SELECT album_id FROM track_index WHERE id=t.id),
+    'album', CASE WHEN json_extract(t.metadata, '$.album') IS NOT NULL THEN COALESCE((SELECT album_name FROM track_index WHERE id=t.id), json_extract(t.metadata, '$.album')) END,
+    'albumArtist', CASE WHEN json_extract(t.metadata, '$.album') IS NOT NULL THEN COALESCE((SELECT album_artist FROM track_index WHERE id=t.id), json_extract(t.metadata, '$.albumArtist')) ELSE json_extract(t.metadata, '$.albumArtist') END,
     'clipVideoId', COALESCE((SELECT clip_id FROM track_variant WHERE audio_id=t.id AND clip_id IS NOT NULL ORDER BY variant_id LIMIT 1), json_extract(t.metadata, '$.clipVideoId')),
     'hasLocalVideo', json(CASE WHEN EXISTS (SELECT 1 FROM track_variant WHERE audio_id=t.id AND local_video) OR json_extract(t.metadata, '$.hasLocalVideo') THEN 'true' ELSE 'false' END)))";
 
@@ -250,6 +366,91 @@ mod tests {
         result.extend_from_slice(kind);
         result.extend_from_slice(data);
         result
+    }
+
+    #[test]
+    fn upgrades_split_album_and_links_the_longer_clip_to_its_audio_track() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("catalog");
+        let library = super::super::Library::new(database.clone()).unwrap();
+        let mut db = super::super::connect(&database).unwrap();
+        let tx = db.transaction().unwrap();
+        let audio = Tags {
+            name: "ДИНАСТИЯ".into(),
+            artists: vec!["VILLIAN".into(), "madk1d".into()],
+            album: Some("Красивое Зло".into()),
+            track_number: Some(5),
+            duration: Some(150.456),
+            external_video_id: Some("p-LBiCtzXu0".into()),
+            isrc: Some("RUAGW2626371".into()),
+            year: Some(2026),
+            ..Tags::default()
+        };
+        let clip = Tags {
+            album: Some("Красивое Зло (Beautiful Evil)".into()),
+            album_artist: Some("VILLIAN".into()),
+            clip_video_id: Some("J7NFL-eOxiQ".into()),
+            external_video_id: Some("J7NFL-eOxiQ".into()),
+            duration: Some(164.881),
+            name: audio.name.clone(),
+            artists: audio.artists.clone(),
+            year: audio.year,
+            ..Tags::default()
+        };
+        let other = Tags {
+            name: "Общество Мертвых Поэтов".into(),
+            artists: vec!["VILLIAN".into(), "Aarne".into()],
+            album: clip.album.clone(),
+            album_artist: clip.album_artist.clone(),
+            clip_video_id: Some("dqK-S9e9720".into()),
+            duration: Some(127.061),
+            year: clip.year,
+            ..Tags::default()
+        };
+        for (id, path, tags, count) in [
+            (1, "/music/audio.mp3", audio, 2),
+            (2, "/music/clip.webm", clip, 3),
+            (3, "/music/other.webm", other, 0),
+        ] {
+            tx.execute(
+                "INSERT INTO track (id,path,stamp,size,metadata,play_count) VALUES (?1,?2,'',0,?3,?4)",
+                params![id, path, serde_json::to_string(&tags).unwrap(), count],
+            ).unwrap();
+            super::super::queries::index(&tx, id, path, &tags).unwrap();
+            tx.execute("INSERT INTO source VALUES ('root',?1)", [id])
+                .unwrap();
+        }
+        tx.execute_batch("PRAGMA user_version=15;").unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        drop(library);
+
+        let library = super::super::Library::new(database.clone()).unwrap();
+        let db = super::super::connect(&database).unwrap();
+        assert_eq!(audio_id(&db, 2).unwrap(), 1);
+        assert!(library
+            .owns_clip(Path::new("/music/audio.mp3"), "J7NFL-eOxiQ")
+            .unwrap());
+        assert!(!library
+            .owns_clip(Path::new("/music/audio.mp3"), "another-id")
+            .unwrap());
+
+        let mut query = db.prepare(&format!(
+            "SELECT {}, {} FROM track t WHERE id NOT IN (SELECT variant_id FROM track_variant) ORDER BY id",
+            METADATA, PLAY_COUNT
+        )).unwrap();
+        let mut rows = query.query([]).unwrap();
+        let first = rows.next().unwrap().unwrap();
+        let metadata: String = first.get(0).unwrap();
+        let audio: Tags = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(audio.clip_video_id.as_deref(), Some("J7NFL-eOxiQ"));
+        assert_eq!(first.get::<_, i64>(1).unwrap(), 5);
+        let other: Tags =
+            serde_json::from_str(&rows.next().unwrap().unwrap().get::<_, String>(0).unwrap())
+                .unwrap();
+        assert_eq!(audio.catalog_album_id, other.catalog_album_id);
+        assert_eq!(other.album.as_deref(), Some("Красивое Зло"));
+        assert!(rows.next().unwrap().is_none());
     }
 
     #[test]

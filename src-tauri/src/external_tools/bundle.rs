@@ -1,7 +1,60 @@
+use reqwest::Client;
+use sha2::{Digest, Sha256};
 use std::{
     io,
     path::{Path, PathBuf},
 };
+use tauri::ipc::Channel;
+use tokio::io::AsyncWriteExt;
+
+use super::InstallProgress;
+
+pub(super) async fn download_verified(
+    client: &Client,
+    url: &str,
+    expected: &str,
+    path: &Path,
+    limit: u64,
+    channel: &Channel<InstallProgress>,
+) -> io::Result<()> {
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(io::Error::other)?;
+    let mut progress = InstallProgress {
+        status: "downloading",
+        downloaded: 0,
+        total: response.content_length(),
+    };
+    let too_large = || io::Error::other("Archive exceeds size limit");
+    if progress.total.is_some_and(|size| size > limit) {
+        return Err(too_large());
+    }
+    let _ = channel.send(progress);
+    let mut hash = Sha256::new();
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut reported = 0;
+    while let Some(chunk) = response.chunk().await.map_err(io::Error::other)? {
+        progress.downloaded += chunk.len() as u64;
+        if progress.downloaded > limit {
+            return Err(too_large());
+        }
+        hash.update(&chunk);
+        file.write_all(&chunk).await?;
+        if progress.downloaded - reported >= 256 * 1024 {
+            let _ = channel.send(progress);
+            reported = progress.downloaded;
+        }
+    }
+    file.flush().await?;
+    if format!("{:x}", hash.finalize()) != expected {
+        return Err(io::Error::other("Archive checksum mismatch"));
+    }
+    let _ = channel.send(progress);
+    Ok(())
+}
 
 pub(super) async fn directory_exists(path: &Path) -> io::Result<bool> {
     match tokio::fs::symlink_metadata(path).await {

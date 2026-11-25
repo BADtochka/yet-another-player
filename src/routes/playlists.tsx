@@ -5,9 +5,12 @@ import { Button } from '@/components/Button';
 import { Dialog } from '@/components/Dialog';
 import { Input } from '@/components/Input';
 import { Track } from '@/components/Track';
+import { PlaylistTransitionEditor } from '@/components/PlaylistTransitionEditor';
+import { SwitchSettings } from '@/components/Settings/SwitchSettings';
 import { CollectionDetails, CollectionList } from '@/components/Collections';
 import { useCollections, useCollectionTracks, useTrackPages } from '@/hooks/useLibrary';
 import { changePlaylists, usePlaylistStore } from '@/stores/playlistStore';
+import { playPlaylist } from '@/stores/playerStore';
 
 export const Route = createFileRoute('/playlists')({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -23,7 +26,9 @@ function Playlists() {
   const [error, setError] = useState('');
   const [editorError, setEditorError] = useState('');
   const [editor, setEditor] = useState<Editor>();
+  const [transitionEditorOpen, setTransitionEditorOpen] = useState(false);
   const [name, setName] = useState('');
+  const [createMix, setCreateMix] = useState(false);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -47,6 +52,7 @@ function Playlists() {
     setEditorError('');
     setName(mode === 'rename' ? playlist?.name ?? '' : '');
     setQuery('');
+    if (mode === 'create') setCreateMix(false);
     setEditor(mode);
   };
 
@@ -67,7 +73,7 @@ function Playlists() {
     if (busy || !editor || editor === 'add') return;
     void run(async () => {
       if (editor === 'create') {
-        const result = await changePlaylists({ type: 'create', name });
+        const result = await changePlaylists({ type: 'create', name, mixEnabled: createMix });
         const created = result[result.length - 1];
         if (created) open(String(created.id));
       } else if (editor === 'rename' && playlist) {
@@ -87,10 +93,12 @@ function Playlists() {
           key={selected.id}
           item={selected}
           kind='playlist'
+          onPlay={(track) => playPlaylist(playlist.id, track.id)}
           back={() => open()}
           actions={
             <>
               <Button size='small' disabled={busy} onClick={() => showEditor('add')}>Добавить треки</Button>
+              <Button size='small' disabled={busy} onClick={() => setTransitionEditorOpen(true)}>Переходы</Button>
               <Button size='small' icon='Pen' disabled={busy} onClick={() => showEditor('rename')}>Переименовать</Button>
               <Button size='small' variant='danger' icon='Trash' disabled={busy} onClick={() => showEditor('delete')}>Удалить</Button>
               {busy && !editor && <LoadingIndicator label='Обновление плейлиста' />}
@@ -123,6 +131,8 @@ function Playlists() {
       {(error || summaries?.error || detail?.error) && <p className='p-4 text-red-400' role='alert'>
         {error || summaries?.error || detail?.error}
       </p>}
+      {transitionEditorOpen && playlist && selected && <PlaylistTransitionEditor key={playlist.id}
+        playlist={playlist} tracks={selected.tracks} onClose={() => setTransitionEditorOpen(false)} />}
       <Dialog open={editor !== undefined} busy={busy} onDismiss={() => setEditor(undefined)}
         title={{ create: 'Создать плейлист', rename: 'Переименовать плейлист', delete: 'Удалить плейлист', add: 'Добавить треки' }[editor ?? 'create']}
         description={editor === 'delete' ? `Удалить «${playlist?.name}»?` : undefined}>
@@ -132,6 +142,8 @@ function Playlists() {
               maxLength={120} required disabled={busy} data-initial-focus
               aria-invalid={!!editorError} onInput={(event) => setName(event.currentTarget.value)} />
           )}
+          {editor === 'create' && <SwitchSettings label='Сводить треки в плейлисте' checked={createMix}
+            onChange={(enabled) => { if (!busy) setCreateMix(enabled); }} />}
           {editor === 'add' && (
             <>
               <Input icon='Search' aria-label='Поиск трека' placeholder='Найти трек' value={query} data-initial-focus
@@ -139,7 +151,7 @@ function Playlists() {
               {busy && <LoadingIndicator label='Добавление трека в плейлист' />}
               <div className='playlist-candidates'>
                 {candidates.tracks.map((track) => (
-                  <Track key={track.id} track={track} disabled={busy} onPlay={() => void run(async () => {
+                  <Track key={track.id} track={track} selectionOnly disabled={busy} onPlay={() => void run(async () => {
                     if (playlist) await changePlaylists({ type: 'add', id: playlist.id, trackId: track.id });
                   })} />
                 ))}

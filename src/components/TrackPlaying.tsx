@@ -1,13 +1,16 @@
+import { ScrollingTrackArtists } from '@/components/ScrollingTrackArtists';
 import { closePlayerVideo, trackVideoId } from '@/utils/playerVideo';
-import { TrackAlbumLink, TrackArtistLinks } from '@/components/TrackLinks';
+import { TrackAlbumLink } from '@/components/TrackLinks';
 import { Artwork } from '@/components/MediaCard';
 import { type Track } from '@/types/Track';
 import { useTrackAudioInfo } from '@/hooks/useTrackAudioInfo';
 import { useTrackCover } from '@/hooks/useTrackCover';
+import { useSettingsStore } from '@/stores';
 
 export function TrackPlaying({ track }: { track: Track | null }) {
   const { coverSrc, clearCover } = useTrackCover(track?.path);
-  const audioInfo = useTrackAudioInfo(track?.path);
+  const showAudioInfo = useSettingsStore((state) => state.showAudioInfo);
+  const audioInfo = useTrackAudioInfo(showAudioInfo ? track?.path : undefined);
   if (!track) return null;
 
   return (
@@ -18,7 +21,7 @@ export function TrackPlaying({ track }: { track: Track | null }) {
       </TrackAlbumLink>
       <span className='track-label'>
         <span className='media-title' title={track.name}><TrackAlbumLink track={track}>{track.name}</TrackAlbumLink></span>
-        <span className='track-artist'><TrackArtistLinks artists={track.artists} /></span>
+        <ScrollingTrackArtists key={track.path} artists={track.artists} />
         {audioInfo && <span className='player-audio-info' title={audioInfo}>{audioInfo}</span>}
       </span>
     </div>

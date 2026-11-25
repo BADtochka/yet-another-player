@@ -9,12 +9,13 @@ import { useVideoAvailable } from '@/utils/playerVideo';
 import { toast } from '@/utils/toast';
 import type { MusicSearchResult } from '@/utils/ytDlp';
 
-export function ExternalResult({ result, localPath, disabled, action, video }: {
+export function ExternalResult({ result, localPath, disabled, action, video, preview }: {
   result: MusicSearchResult;
   localPath?: string;
   disabled: boolean;
   action: () => void;
   video: () => void;
+  preview: () => void;
 }) {
   const [inspected, setInspected] = useState(false);
   const available = useVideoAvailable(inspected && result.videoAvailable == null ? result.id : undefined);
@@ -43,8 +44,12 @@ export function ExternalResult({ result, localPath, disabled, action, video }: {
           {localPath && <span className='track-artist'>В медиатеке</span>}
         </span>
       </button>
-      {!download && showVideo && <Button className='search-card-video' size='icon' icon='Video'
-        title='Смотреть видео' aria-label={`Смотреть «${result.title}»`} disabled={disabled} onClick={video} />}
+      {!download && <div className='search-card-actions'>
+        <Button size='icon' variant='secondary' icon='PlayV2' title='Предпросмотр'
+          aria-label={`Предпросмотр «${result.title}»`} disabled={disabled} onClick={preview} />
+        {showVideo && <Button size='icon' icon='Video'
+          title='Смотреть видео' aria-label={`Смотреть «${result.title}»`} disabled={disabled} onClick={video} />}
+      </div>}
       {percent !== null && <Progress className='search-card-progress' max={100} value={percent} label='Ход загрузки' />}
       {canCancel && <Button className='search-card-cancel' size='small' variant='secondary'
         disabled={download.cancelling} aria-label='Отменить загрузку'

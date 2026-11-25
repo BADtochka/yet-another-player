@@ -55,6 +55,13 @@ pub(super) struct Installed {
 }
 
 pub(super) async fn installed(app: &tauri::AppHandle) -> io::Result<Option<Installed>> {
+    if !super::enabled::tool_enabled(app, super::install::Tool::Ffmpeg) {
+        return Ok(None);
+    }
+    find_installed(app).await
+}
+
+async fn find_installed(app: &tauri::AppHandle) -> io::Result<Option<Installed>> {
     let data = app.path().app_data_dir().map_err(io::Error::other)?;
     let Some(tools) = bundle::tools_directory(&data, false).await? else {
         return Ok(None);
@@ -84,7 +91,7 @@ pub(super) async fn installed(app: &tauri::AppHandle) -> io::Result<Option<Insta
 
 #[tauri::command]
 pub(crate) async fn check_ffmpeg(app: tauri::AppHandle) -> Result<Status, String> {
-    let Some(installed) = installed(&app).await.map_err(install_error)? else {
+    let Some(installed) = find_installed(&app).await.map_err(install_error)? else {
         return Ok(Status {
             installed: false,
             version: None,
@@ -93,10 +100,15 @@ pub(crate) async fn check_ffmpeg(app: tauri::AppHandle) -> Result<Status, String
         });
     };
     let path = installed.path.join(BINARIES[0]);
-    let (version, launch_error) = match probe_bundle(&installed.path).await {
-        Ok(version) => (Some(version), None),
-        Err(error) => (None, Some(error)),
-    };
+    let (version, launch_error) =
+        if super::enabled::tool_enabled(&app, super::install::Tool::Ffmpeg) {
+            match probe_bundle(&installed.path).await {
+                Ok(version) => (Some(version), None),
+                Err(error) => (None, Some(error)),
+            }
+        } else {
+            (None, None)
+        };
     Ok(Status {
         installed: true,
         version,

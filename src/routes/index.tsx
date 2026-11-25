@@ -1,16 +1,12 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { CatalogCollectionPage } from '@/components/Collections';
+import { createFileRoute, redirect } from '@tanstack/react-router';
+import { validateAlbumSearch } from './albums';
 
 export const Route = createFileRoute('/')({
-  validateSearch: (search: Record<string, unknown>) => ({
-    collection: typeof search.collection === 'string' ? search.collection : undefined,
-  }),
-  component: CollectionPage,
+  validateSearch: validateAlbumSearch,
+  beforeLoad: ({ search }) => {
+    if (search.collection || search.release) {
+      throw redirect({ to: '/albums', search, replace: true });
+    }
+    throw redirect({ to: '/tracks', replace: true });
+  },
 });
-
-function CollectionPage() {
-  const { collection } = Route.useSearch();
-  const navigate = Route.useNavigate();
-  return <CatalogCollectionPage kind='album' id={collection}
-    open={(id) => void navigate({ search: { collection: id } })} />;
-}

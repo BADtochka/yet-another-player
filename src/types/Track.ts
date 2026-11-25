@@ -15,7 +15,14 @@ export type Track = {
   discNumber: number | null;
   trackNumber: number | null;
   genre: string | null;
+  genres: string[];
   year: number | null;
+  isSingle?: boolean;
+  isEp?: boolean;
+  releaseDate: string | null;
+  playCount: number;
+  lyricsOffsetMs?: number;
+  clipLyricsOffsetMs?: number;
   duration: number | null;
   replayGainDb: number | null;
 };

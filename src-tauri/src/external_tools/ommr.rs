@@ -9,10 +9,8 @@ use std::{
 use flate2::read::GzDecoder;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
 use tokio::{
-    io::AsyncWriteExt,
     process::{Child, Command},
     sync::Mutex,
     time::{sleep, timeout},
@@ -55,15 +53,29 @@ pub(crate) struct Status {
     path: Option<PathBuf>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Configuration {
     pub(crate) mode: Mode,
     pub(crate) url: Option<String>,
     pub(crate) sources: Vec<String>,
+    #[serde(default)]
+    pub(crate) primary: MetadataSource,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum MetadataSource {
+    #[default]
+    Auto,
+    Ommr,
+    Itunes,
+    MusicBrainz,
+    Genius,
+    Off,
+}
+
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Mode {
     Off,
@@ -380,42 +392,9 @@ async fn download(
 ) -> Result<(), String> {
     install
         .wait(async {
-            let mut response = client
-                .get(url)
-                .send()
+            bundle::download_verified(client, url, expected, path, LIMIT, channel)
                 .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(failure)?;
-            let mut progress = InstallProgress {
-                status: "downloading",
-                downloaded: 0,
-                total: response.content_length(),
-            };
-            if progress.total.is_some_and(|total| total > LIMIT) {
-                return Err("Архив OMMR превышает допустимый размер.".into());
-            }
-            let _ = channel.send(progress);
-            let mut hash = Sha256::new();
-            let mut file = tokio::fs::File::create(path).await.map_err(failure)?;
-            let mut reported = 0;
-            while let Some(chunk) = response.chunk().await.map_err(failure)? {
-                progress.downloaded += chunk.len() as u64;
-                if progress.downloaded > LIMIT {
-                    return Err("Архив OMMR превышает допустимый размер.".into());
-                }
-                hash.update(&chunk);
-                file.write_all(&chunk).await.map_err(failure)?;
-                if progress.downloaded - reported >= 256 * 1024 {
-                    let _ = channel.send(progress);
-                    reported = progress.downloaded;
-                }
-            }
-            file.flush().await.map_err(failure)?;
-            if format!("{:x}", hash.finalize()) != expected {
-                return Err("Контрольная сумма архива OMMR или Go не совпала.".into());
-            }
-            let _ = channel.send(progress);
-            Ok(())
+                .map_err(failure)
         })
         .await
 }
@@ -596,8 +575,19 @@ async fn stop(running: &mut Option<Running>) -> Result<(), String> {
 }
 
 impl LocalServer {
+    pub(crate) async fn stop_if_disabled(&self, app: &AppHandle) -> Result<(), String> {
+        let mut running = self.0.lock().await;
+        if !super::enabled::tool_enabled(app, super::install::Tool::Ommr) {
+            stop(&mut running).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn endpoint(&self, app: &AppHandle) -> Result<Option<String>, String> {
         let mut state = self.0.lock().await;
+        if !super::enabled::tool_enabled(app, super::install::Tool::Ommr) {
+            return Ok(None);
+        }
         if let Some(running) = state.as_mut() {
             if running.child.try_wait().map_err(failure)?.is_none() {
                 return Ok(Some(format!("http://127.0.0.1:{}", running.port)));
@@ -733,6 +723,7 @@ mod tests {
             mode: Mode::Local,
             url: None,
             sources: vec![concat!("yt", "music").into(), "applemusic".into()],
+            primary: MetadataSource::Auto,
         };
         assert_eq!(config.sources().unwrap(), concat!("applemusic,yt", "music"));
         config.sources.push("invalid".into());

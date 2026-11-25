@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     cover,
-    external_tools::ommr::{normalize_url, Configuration, LocalServer, Mode},
+    external_tools::ommr::{normalize_url, Configuration, LocalServer, MetadataSource, Mode},
 };
 use tokio::{
     sync::Mutex,
@@ -22,6 +22,9 @@ use tokio::{
 };
 
 use super::{connect, queries, LibraryResult, Tags};
+
+mod providers;
+use providers::Sources;
 
 const PAGE_SIZE: i64 = 48;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(1200);
@@ -41,7 +44,8 @@ impl Worker {
         config: Configuration,
     ) {
         let revision = self.revision.fetch_add(1, Ordering::Relaxed) + 1;
-        let enabled = !matches!(config.mode, Mode::Off);
+        let enabled = config.primary != MetadataSource::Off;
+        let _ = app.emit("library:release-progress", Option::<()>::None);
         let _ = app.emit("library:metadata-running", enabled);
         if !enabled {
             return;
@@ -52,18 +56,44 @@ impl Worker {
                 if worker.revision.load(Ordering::Relaxed) != revision {
                     return Ok(());
                 }
-                let Some(resolver) = configured_resolver(&app, config).await? else {
+                let resolver = Sources::configured(&app, config.clone()).await?;
+                if resolver.order.is_empty() {
                     return Ok(());
-                };
-                worker
+                }
+                {
+                    let _writer = writer.lock().await;
+                    if worker.revision.load(Ordering::Relaxed) != revision {
+                        return Ok(());
+                    }
+                    connect(&database)?.execute("DELETE FROM metadata_log", [])?;
+                }
+                let _ = app.emit("library:metadata-log", ());
+                let result = worker
                     .enrich(&app, &database, &writer, revision, &resolver, None)
-                    .await
+                    .await;
+                let current = || worker.revision.load(Ordering::Relaxed) == revision;
+                {
+                    let _writer = writer.lock().await;
+                    if !current() {
+                        return Ok(());
+                    }
+                    let mut db = connect(&database)?;
+                    let tx = db.transaction()?;
+                    super::versions::rebuild(&tx)?;
+                    tx.execute("UPDATE catalog_state SET revision=revision+1", [])?;
+                    tx.commit()?;
+                }
+                let _ = app.emit("library:metadata", ());
+                let catalog =
+                    super::catalog::warm_scan(&app, config, resolver.token, current).await;
+                result.and(catalog)
             }
             .await;
             if worker.revision.load(Ordering::Relaxed) == revision {
+                let _ = app.emit("library:release-progress", Option::<()>::None);
                 let _ = app.emit("library:metadata-running", false);
                 if let Err(error) = result {
-                    eprintln!("OMMR: {error}");
+                    eprintln!("Metadata search: {error}");
                     let _ = app.emit("library:metadata-error", ());
                 }
             }
@@ -78,12 +108,15 @@ impl Worker {
         config: Configuration,
         id: i64,
     ) -> LibraryResult<()> {
-        let Some(resolver) = configured_resolver(app, config).await? else {
+        let resolver = Sources::configured(app, config).await?;
+        if resolver.order.is_empty() {
             return Ok(());
-        };
+        }
         let revision = self.revision.load(Ordering::Relaxed);
         self.enrich(app, database, writer, revision, &resolver, Some(id))
-            .await
+            .await?;
+        let _ = app.emit("library:metadata", ());
+        Ok(())
     }
 
     async fn enrich(
@@ -92,107 +125,235 @@ impl Worker {
         database: &Path,
         writer: &Mutex<()>,
         revision: u64,
-        resolver: &Resolver,
+        resolver: &Sources,
         download: Option<i64>,
     ) -> LibraryResult<()> {
         let current = || self.revision.load(Ordering::Relaxed) == revision;
         let mut cursor = 0;
+        let mut consecutive_errors = 0;
+        let mut last_update = Instant::now();
+        let mut changed = Vec::new();
+        let mut statuses = Vec::new();
         while current() {
             let rows = read_page(database, cursor, download)?;
             if rows.is_empty() {
                 break;
             }
-            let mut changed = Vec::new();
-            let mut failure = None;
             for (id, path, original, source_video_id, downloaded_cover) in rows {
                 cursor = id;
                 if !current() {
-                    publish(app, database, writer, changed).await?;
                     return Ok(());
                 }
                 let mut tags: Tags = serde_json::from_str(&original)?;
+                let mut artwork = tags.cover_url.clone();
                 let track_path = Path::new(&path);
-                if !track_path.is_file()
-                    || (!tags.missing_catalog_fields()
-                        && (tags.cover_url.is_some()
-                            || downloaded_cover
-                            || cover::extract_cover(track_path).is_some()))
+                let mut attempts = Vec::new();
+                let status = if !track_path.is_file() {
+                    "unavailable"
+                } else if !tags.missing_catalog_fields()
+                    && (tags.cover_url.is_some()
+                        || downloaded_cover
+                        || cover::extract_cover(track_path).is_some())
                 {
-                    continue;
-                }
-                let input = Lookup::new(&tags, track_path, source_video_id.as_deref());
-                if input.reference.is_none()
-                    && (input.title.is_empty()
-                        || [
-                            input.title.as_str(),
-                            input.artist.as_str(),
-                            input.album.as_str(),
-                        ]
-                        .iter()
-                        .any(|field| field.len() > 1024 || field.contains(char::is_control)))
-                {
-                    continue;
-                }
-                let key =
-                    serde_json::to_string(&(&resolver.cache_scope, &resolver.sources, &input))?;
-                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-                let mut next = self.next_request.lock().await;
-                if !current() {
-                    publish(app, database, writer, changed).await?;
-                    return Ok(());
-                }
-                let cached = cached(&connect(database)?, &key, now)?;
-                let track = match cached {
-                    Some(track) => track,
-                    None => match resolver.resolve(&input, &mut next, &current).await {
-                        Ok(track) => {
+                    "unchanged"
+                } else {
+                    let input = Lookup::new(&tags, track_path, source_video_id.as_deref());
+                    if input.reference.is_none()
+                        && (input.title.is_empty()
+                            || [&input.title, &input.artist, &input.album]
+                                .iter()
+                                .any(|field| {
+                                    field.len() > 1024 || field.contains(char::is_control)
+                                }))
+                    {
+                        "missing"
+                    } else {
+                        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+                        let mut found = false;
+                        let mut date_origin = if tags
+                            .release_date
+                            .as_deref()
+                            .and_then(release_date)
+                            .is_some()
+                        {
+                            DateOrigin::Local
+                        } else {
+                            DateOrigin::Track
+                        };
+                        let mut last_error = None;
+                        for &source in &resolver.order {
                             if !current() {
-                                publish(app, database, writer, changed).await?;
                                 return Ok(());
                             }
-                            let _writer = writer.lock().await;
-                            connect(database)?.execute(
-                                "INSERT OR REPLACE INTO resolver_cache VALUES (?1, ?2, ?3)",
-                                params![key, now, serde_json::to_string(&track)?],
-                            )?;
-                            track
-                        }
-                        Err(error) => {
-                            if !current() {
-                                publish(app, database, writer, changed).await?;
-                                return Ok(());
-                            }
-                            if error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
-                                error.status() == Some(StatusCode::BAD_REQUEST)
-                            }) {
+                            if !resolver.enabled(app, source) || !resolver.supports(source, &input)
+                            {
                                 continue;
                             }
-                            failure = Some(error);
-                            break;
+                            let key = resolver.cache_key(source, &input)?;
+                            let mut next = match source {
+                                MetadataSource::Itunes => super::catalog::ITUNES_NEXT.lock().await,
+                                MetadataSource::MusicBrainz => {
+                                    super::catalog::BRAINZ_NEXT.lock().await
+                                }
+                                _ => self.next_request.lock().await,
+                            };
+                            if !current() {
+                                return Ok(());
+                            }
+                            let cache = cached(&connect(database)?, &key, now)?;
+                            let used_cache = cache.is_some();
+                            let result = if let Some(track) = cache {
+                                Ok(track)
+                            } else {
+                                if download.is_none() {
+                                    let _writer = writer.lock().await;
+                                    if !current() {
+                                        return Ok(());
+                                    }
+                                    let pending = attempts
+                                        .iter()
+                                        .cloned()
+                                        .chain([Attempt::new(
+                                            source,
+                                            "searching",
+                                            false,
+                                            Vec::new(),
+                                        )])
+                                        .collect::<Vec<_>>();
+                                    write_log(&connect(database)?, id, "searching", &pending)?;
+                                    let _ = app.emit("library:metadata-log", ());
+                                }
+                                let result = resolver
+                                    .resolve(app, source, &input, &mut next, &current)
+                                    .await;
+                                if !current() {
+                                    return Ok(());
+                                }
+                                if !resolver.enabled(app, source) {
+                                    attempts.push(Attempt::new(
+                                        source,
+                                        "cancelled",
+                                        false,
+                                        Vec::new(),
+                                    ));
+                                    continue;
+                                }
+                                if let Ok(track) = &result {
+                                    let _writer = writer.lock().await;
+                                    if !current() {
+                                        return Ok(());
+                                    }
+                                    connect(database)?.execute(
+                                        "INSERT OR REPLACE INTO resolver_cache VALUES (?1, ?2, ?3)",
+                                        params![key, now, serde_json::to_string(&track)?],
+                                    )?;
+                                }
+                                result
+                            };
+                            drop(next);
+                            match result {
+                                Ok(Some(track)) => {
+                                    attempts.push(Attempt::new(
+                                        source,
+                                        "found",
+                                        used_cache,
+                                        track.catalogs.clone(),
+                                    ));
+                                    found = true;
+                                    track.fill(&mut tags, &mut date_origin);
+                                }
+                                Ok(None) => attempts.push(Attempt::new(
+                                    source,
+                                    "missing",
+                                    used_cache,
+                                    Vec::new(),
+                                )),
+                                Err(error)
+                                    if error.downcast_ref::<reqwest::Error>().is_some_and(
+                                        |error| {
+                                            matches!(
+                                                error.status(),
+                                                Some(
+                                                    StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+                                                )
+                                            )
+                                        },
+                                    ) =>
+                                {
+                                    attempts.push(Attempt::new(
+                                        source,
+                                        "missing",
+                                        false,
+                                        Vec::new(),
+                                    ))
+                                }
+                                Err(error) => {
+                                    attempts.push(Attempt::new(source, "error", false, Vec::new()));
+                                    last_error = Some(error);
+                                }
+                            }
                         }
-                    },
+                        if found {
+                            consecutive_errors = 0;
+                            super::edits::apply(&connect(database)?, &path, &mut tags)?;
+                            artwork.clone_from(&tags.cover_url);
+                            let metadata = serde_json::to_string(&tags)?;
+                            if metadata != original {
+                                changed.push((id, path, original, metadata, tags));
+                                "updated"
+                            } else {
+                                "unchanged"
+                            }
+                        } else if let Some(error) = last_error {
+                            consecutive_errors += 1;
+                            eprintln!("Metadata track {id}: {error}");
+                            "error"
+                        } else {
+                            consecutive_errors = 0;
+                            "missing"
+                        }
+                    }
                 };
-                drop(next);
-                if let Some(track) = track {
-                    track.fill(&mut tags);
-                    let metadata = serde_json::to_string(&tags)?;
-                    if metadata != original {
-                        changed.push((id, path, original, metadata, tags));
+                if status != "unavailable" && current() {
+                    if let Some(url) = artwork.as_deref() {
+                        super::catalog::cache_artwork(database, url).await;
                     }
                 }
-                // Publish small groups so long scans show completed matches while requests continue.
-                if changed.len() >= 8 {
-                    publish(app, database, writer, std::mem::take(&mut changed)).await?;
+                statuses.push((id, status, attempts));
+                if statuses.len() >= PAGE_SIZE as usize
+                    || last_update.elapsed() >= Duration::from_secs(5)
+                    || consecutive_errors >= 3
+                {
+                    publish(
+                        app,
+                        database,
+                        writer,
+                        &current,
+                        std::mem::take(&mut changed),
+                        std::mem::take(&mut statuses),
+                        download.is_some(),
+                    )
+                    .await?;
+                    last_update = Instant::now();
                 }
-            }
-            publish(app, database, writer, changed).await?;
-            if let Some(error) = failure {
-                return Err(error);
+                if consecutive_errors >= 3 {
+                    return Err("Metadata search failed on three consecutive tracks".into());
+                }
             }
             if download.is_some() {
                 break;
             }
         }
+        publish(
+            app,
+            database,
+            writer,
+            &current,
+            changed,
+            statuses,
+            download.is_some(),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -261,14 +422,23 @@ async fn publish(
     app: &AppHandle,
     database: &Path,
     writer: &Mutex<()>,
+    current: &(impl Fn() -> bool + Sync),
     rows: Vec<ResolvedRow>,
+    statuses: Vec<(i64, &'static str, Vec<Attempt>)>,
+    rebuild_on_update: bool,
 ) -> LibraryResult<()> {
-    if rows.is_empty() {
+    if rows.is_empty() && statuses.is_empty() {
         return Ok(());
     }
     let _writer = writer.lock().await;
+    if !current() {
+        return Ok(());
+    }
     let mut db = connect(database)?;
     let tx = db.transaction()?;
+    for (id, status, attempts) in &statuses {
+        write_log(&tx, *id, status, attempts)?;
+    }
     let mut updated = false;
     for (id, path, original, metadata, tags) in rows {
         if tx.execute(
@@ -282,13 +452,45 @@ async fn publish(
         }
     }
     if updated {
-        super::versions::rebuild(&tx)?;
+        if rebuild_on_update {
+            super::versions::rebuild(&tx)?;
+        }
         tx.execute("UPDATE catalog_state SET revision=revision+1", [])?;
     }
     tx.commit()?;
+    if !statuses.is_empty() {
+        let _ = app.emit("library:metadata-log", ());
+    }
     if updated {
         let _ = app.emit("library:metadata", ());
     }
+    Ok(())
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(super) struct Attempt {
+    source: MetadataSource,
+    status: String,
+    cached: bool,
+    catalogs: Vec<String>,
+}
+
+impl Attempt {
+    fn new(source: MetadataSource, status: &str, cached: bool, catalogs: Vec<String>) -> Self {
+        Self {
+            source,
+            status: status.into(),
+            cached,
+            catalogs,
+        }
+    }
+}
+
+fn write_log(db: &Connection, id: i64, status: &str, attempts: &[Attempt]) -> LibraryResult<()> {
+    db.prepare_cached(
+        "INSERT OR REPLACE INTO metadata_log (track_id, status, attempts) VALUES (?1, ?2, ?3)",
+    )?
+    .execute(params![id, status, serde_json::to_string(attempts)?])?;
     Ok(())
 }
 
@@ -296,6 +498,8 @@ async fn publish(
 struct Lookup {
     title: String,
     artist: String,
+    #[serde(skip)]
+    artists: Vec<String>,
     album: String,
     reference: Option<(&'static str, String)>,
     duration: Option<f64>,
@@ -312,7 +516,8 @@ impl Lookup {
         });
         let artist = tags
             .artists
-            .first()
+            .iter()
+            .find(|name| !name.trim().is_empty())
             .map(String::as_str)
             .or_else(|| {
                 tags.album_artist
@@ -321,6 +526,17 @@ impl Lookup {
             })
             .or_else(|| guessed.map(|(artist, _)| artist))
             .unwrap_or("");
+        let mut artists = tags
+            .artists
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .take(12)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if artists.is_empty() && !artist.trim().is_empty() {
+            artists.push(artist.trim().to_owned());
+        }
         let title = if tags.fallback_title || tags.name == filename {
             guessed.map_or(tags.name.as_str(), |(_, title)| title)
         } else {
@@ -335,6 +551,7 @@ impl Lookup {
         Self {
             title: title.trim().to_owned(),
             artist: artist.trim().to_owned(),
+            artists,
             album: tags.album.as_deref().unwrap_or("").trim().to_owned(),
             reference,
             duration: tags.duration,
@@ -356,6 +573,8 @@ struct Track {
     images: Option<Vec<Artwork>>,
     isrc: String,
     provider_data: Option<ProviderData>,
+    album_artist: Option<String>,
+    catalogs: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -368,7 +587,10 @@ struct Artist {
 struct Album {
     title: String,
     release_date: String,
+    verified_date: bool,
     images: Option<Vec<Artwork>>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -379,6 +601,8 @@ struct Artwork {
 #[derive(Deserialize, Serialize)]
 struct ProviderData {
     deezer: Option<Deezer>,
+    #[serde(flatten, skip_serializing)]
+    other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -427,6 +651,9 @@ fn fill(field: &mut Option<String>, value: Option<String>) {
 impl Tags {
     fn missing_catalog_fields(&self) -> bool {
         self.fallback_title
+            || self.is_single.is_none()
+            || release_date(self.release_date.as_deref().unwrap_or_default())
+                .is_none_or(|(date, _)| date.len() < 10)
             || self.name.trim().is_empty()
             || self.artists.is_empty()
             || self.year.is_none()
@@ -445,6 +672,44 @@ impl Tags {
     }
 }
 
+fn release_date(value: &str) -> Option<(String, u16)> {
+    let parsed = value.trim().parse::<lofty::tag::items::Timestamp>().ok()?;
+    let year = parsed.year;
+    if year == 0 {
+        return None;
+    }
+    let date = match (parsed.month, parsed.day) {
+        (Some(month), Some(day)) => format!("{year:04}-{month:02}-{day:02}"),
+        (Some(month), None) => format!("{year:04}-{month:02}"),
+        _ => format!("{year:04}"),
+    };
+    Some((date, year))
+}
+
+fn release_name(value: &str) -> String {
+    let name = value.trim().to_lowercase();
+    name.strip_suffix(" - single")
+        .or_else(|| name.strip_suffix(" - ep"))
+        .unwrap_or(&name)
+        .to_owned()
+}
+
+fn release_is_single(kind: &str) -> Option<bool> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "single" => Some(true),
+        "album" | "ep" | "compilation" => Some(false),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum DateOrigin {
+    Track,
+    Edition,
+    VerifiedEdition,
+    Local,
+}
+
 impl Track {
     fn matches_duration(&self, duration: Option<f64>) -> bool {
         duration
@@ -454,7 +719,7 @@ impl Track {
             })
     }
 
-    fn fill(self, tags: &mut Tags) {
+    fn fill(self, tags: &mut Tags, date_origin: &mut DateOrigin) {
         let album = self.album.unwrap_or_default();
         if (tags.fallback_title || tags.name.trim().is_empty()) && !self.title.trim().is_empty() {
             tags.name = self.title.trim().to_owned();
@@ -469,13 +734,14 @@ impl Track {
         if tags.artists.is_empty() {
             tags.artists = artists;
         }
-        let matching_edition = tags.album.as_deref().is_none_or(|local| {
-            local.trim().is_empty()
-                || local.trim().to_lowercase() == album.title.trim().to_lowercase()
-        });
+        let local_album = tags.album.as_deref().unwrap_or_default().trim();
+        let matching_edition =
+            local_album.is_empty() || release_name(local_album) == release_name(&album.title);
+        let local_single =
+            tags.is_single == Some(true) && release_name(local_album) == release_name(&self.title);
         fill(&mut tags.album, clean(&album.title));
         if matching_edition {
-            let album_artist = self
+            let native_album = self
                 .provider_data
                 .and_then(|data| data.deezer)
                 .and_then(|data| data.catalog)
@@ -484,19 +750,30 @@ impl Track {
                     native
                         .title
                         .as_deref()
-                        .is_some_and(|title| title == album.title)
-                })
+                        .is_some_and(|title| release_name(title) == release_name(&album.title))
+                });
+            let single = album
+                .kind
+                .as_deref()
+                .and_then(release_is_single)
+                .or_else(|| {
+                    album
+                        .title
+                        .trim()
+                        .to_lowercase()
+                        .ends_with(" - single")
+                        .then_some(true)
+                });
+            tags.is_ep |= tags.is_single.is_none()
+                && album
+                    .kind
+                    .as_deref()
+                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("ep"));
+            tags.is_single = tags.is_single.or(single);
+            let album_artist = native_album
                 .and_then(|native| native.artist)
                 .and_then(|artist| clean(&artist.name));
-            fill(&mut tags.album_artist, album_artist);
-            let date = clean(&album.release_date).or_else(|| clean(&self.release_date));
-            let year = date
-                .as_deref()
-                .and_then(|date| date.get(..4)?.parse::<u16>().ok());
-            if tags.year.is_none() || tags.year == year {
-                fill(&mut tags.release_date, date);
-                tags.year = tags.year.or(year);
-            }
+            fill(&mut tags.album_artist, self.album_artist.or(album_artist));
             tags.disc_number = tags
                 .disc_number
                 .or(self.disc_number.filter(|number| *number > 0));
@@ -504,18 +781,56 @@ impl Track {
                 .track_number
                 .or(self.track_number.filter(|number| *number > 0));
         }
+        if matching_edition || (local_single && album.title.trim().is_empty()) {
+            let edition_date = release_date(&album.release_date);
+            let origin = if edition_date.is_none() {
+                DateOrigin::Track
+            } else if album.verified_date {
+                DateOrigin::VerifiedEdition
+            } else {
+                DateOrigin::Edition
+            };
+            if let Some((date, year)) = edition_date.or_else(|| release_date(&self.release_date)) {
+                let previous = tags.release_date.as_deref().and_then(release_date);
+                if tags.year.is_none_or(|known| known == year)
+                    && previous.as_ref().is_none_or(|(known, known_year)| {
+                        *known_year == year
+                            && (known.len() < date.len()
+                                || (known.len() == date.len() && origin > *date_origin))
+                    })
+                {
+                    tags.release_date = Some(date);
+                    tags.year = Some(year);
+                    *date_origin = origin;
+                }
+            }
+        }
         tags.duration = tags.duration.or(self
             .duration_ms
             .filter(|ms| *ms > 0)
             .map(|ms| ms as f64 / 1000.0));
         fill(&mut tags.isrc, clean(&self.isrc));
-        fill(
-            &mut tags.genre,
-            self.genres
-                .unwrap_or_default()
+        if let Some(genres) = self.genres {
+            if tags.genres.is_empty() {
+                tags.genres.extend(tags.genre.iter().cloned());
+            }
+            let mut known = tags
+                .genres
                 .iter()
-                .find_map(|genre| clean(genre)),
-        );
+                .flat_map(|genre| genre.split([',', ';']))
+                .map(|genre| genre.trim().to_lowercase())
+                .collect::<std::collections::HashSet<_>>();
+            tags.genres.extend(
+                genres
+                    .iter()
+                    .flat_map(|genre| genre.split([',', ';']))
+                    .filter_map(clean)
+                    .filter(|genre| known.insert(genre.to_lowercase())),
+            );
+            if tags.genre.is_none() {
+                tags.genre = tags.genres.first().cloned();
+            }
+        }
         let images = album.images.into_iter().chain(self.images).flatten();
         let cover = images
             .filter_map(|image| Url::parse(&image.url).ok())
@@ -606,9 +921,24 @@ impl Resolver {
         }
         let result: Resolution = self.get("resolve", &query, next, current).await?;
         Ok(result.track.filter(|track| {
-            track.matches_duration(input.duration)
-                || (!inferred_artist
-                    && (track.duration_ms.is_none_or(|ms| ms == 0) || input.duration.is_none()))
+            let normalized = |value: &str| {
+                value
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase()
+            };
+            normalized(&track.title) == normalized(&input.title)
+                && track.artists.as_ref().is_some_and(|artists| {
+                    let artist = normalized(&artist);
+                    artists
+                        .iter()
+                        .any(|credit| normalized(&credit.name) == artist)
+                })
+                && (track.matches_duration(input.duration)
+                    || (!inferred_artist
+                        && (track.duration_ms.is_none_or(|ms| ms == 0)
+                            || input.duration.is_none())))
         }))
     }
 
@@ -622,6 +952,7 @@ impl Resolver {
         const LIMIT: usize = 2 * 1024 * 1024;
         let sources = (!self.sources.is_empty()).then_some(("sources", self.sources.as_str()));
         let sources = sources.as_slice();
+        let mut retries = 0;
         let mut backoff = 3;
         loop {
             while let Some(time) = next.filter(|time| *time > Instant::now()) {
@@ -653,8 +984,11 @@ impl Resolver {
                     .unwrap_or(backoff)
                     .clamp(2, 86_400);
                 *next = Some(Instant::now() + Duration::from_secs(retry));
-                backoff = (backoff * 2).min(120);
-                continue;
+                if retries < 2 && retry <= 120 {
+                    retries += 1;
+                    backoff = (backoff * 2).min(120);
+                    continue;
+                }
             }
             response = response.error_for_status()?;
             let mut body = Vec::new();
@@ -672,6 +1006,58 @@ impl Resolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_genres_and_prefers_the_actual_single_release_date() {
+        let mut tags = Tags {
+            name: "Party With The Boys".into(),
+            album: Some("Party With The Boys".into()),
+            genre: Some("Hip-Hop/Rap".into()),
+            ..Tags::default()
+        };
+        let first: Track = serde_json::from_str(
+            r#"{
+            "title": "Party With The Boys",
+            "album": {"title": "Party With The Boys", "release_date": "2026-10-29"},
+            "genres": ["hip-hop/rap", "Trap"]
+        }"#,
+        )
+        .unwrap();
+        let second: Track = serde_json::from_str(r#"{
+            "title": "Party With The Boys",
+            "album": {"title": "Party With The Boys - Single", "release_date": "2026-11-13T08:00:00Z", "verified_date":true},
+            "genres": ["Trap", "Southern Hip Hop"]
+        }"#).unwrap();
+        let mut date_origin = DateOrigin::Track;
+        first.fill(&mut tags, &mut date_origin);
+        second.fill(&mut tags, &mut date_origin);
+        assert_eq!(tags.release_date.as_deref(), Some("2026-11-13"));
+        assert_eq!(tags.is_single, Some(true));
+        assert_eq!(tags.album.as_deref(), Some("Party With The Boys"));
+        assert_eq!(tags.genres, ["Hip-Hop/Rap", "Trap", "Southern Hip Hop"]);
+    }
+
+    #[test]
+    fn does_not_replace_local_date_or_release_type_with_another_edition() {
+        let mut tags = Tags {
+            name: "Track".into(),
+            album: Some("Album".into()),
+            release_date: Some("2024-09-06".into()),
+            year: Some(2024),
+            is_single: Some(false),
+            ..Tags::default()
+        };
+        let single: Track = serde_json::from_str(
+            r#"{
+            "title": "Track",
+            "album": {"title": "Track - Single", "release_date": "2024-06-01", "type":"single"}
+        }"#,
+        )
+        .unwrap();
+        single.fill(&mut tags, &mut DateOrigin::Local);
+        assert_eq!(tags.release_date.as_deref(), Some("2024-09-06"));
+        assert_eq!(tags.is_single, Some(false));
+    }
 
     #[tokio::test]
     async fn retries_throttled_requests_using_retry_after() {
@@ -742,7 +1128,10 @@ mod tests {
         );
 
         let resolved: Resolution = serde_json::from_str(r#"{"track":{"title":"Песня","artists":[{"name":"Артист"}],"album":{"title":"Релиз","release_date":"2026-02-17"},"genres":["Поп"],"track_number":3}}"#).unwrap();
-        resolved.track.unwrap().fill(&mut tags);
+        resolved
+            .track
+            .unwrap()
+            .fill(&mut tags, &mut DateOrigin::Local);
         assert_eq!(tags.name, "Песня");
         assert_eq!(tags.album.as_deref(), Some("Релиз"));
         assert_eq!(tags.release_date.as_deref(), Some("2026-02-17"));
