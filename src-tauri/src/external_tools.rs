@@ -16,6 +16,7 @@ pub(crate) mod install;
 pub(crate) mod lyrica_server;
 pub(crate) mod music_metadata;
 pub(crate) mod ommr;
+pub(crate) mod sync_server;
 pub(crate) mod preview;
 pub(crate) mod search;
 pub(crate) mod yt_dlp_bundle;

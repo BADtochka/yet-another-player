@@ -120,6 +120,7 @@ pub(super) fn apply(db: &Connection, path: &str, tags: &mut Tags) -> LibraryResu
         Some((fields, offset)) => (serde_json::from_str::<Map<String, Value>>(&fields)?, Some(offset)),
         None => (Map::new(), None),
     };
+    super::sync::extend_metadata_edits(db, path, &mut fields)?;
     if !fields.is_empty() || offset.is_some() {
         let mut original = serde_json::to_value(&*tags)?;
         let values = original.as_object_mut().ok_or("Invalid track metadata")?;
@@ -249,6 +250,9 @@ async fn save(
         )?;
         let fields_changed = fields.is_some();
         let mut tags = serde_json::from_str(&metadata)?;
+        if let Some(fields) = &fields {
+            super::sync::queue_metadata_edits(&tx, id, fields)?;
+        }
         write_edit(&tx, id, &tags, fields, offsets)?;
         apply(&tx, &path, &mut tags)?;
         tx.execute("UPDATE track SET metadata=?2 WHERE id=?1", params![id, serde_json::to_string(&tags)?])?;

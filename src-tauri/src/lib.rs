@@ -286,6 +286,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(audio_environment)
         .manage(external_tools::ommr::LocalServer::default())
+        .manage(external_tools::sync_server::LocalServer::default())
         .manage(external_tools::lyrica_server::LocalLyrica::default())
         .manage(external_tools::downloads::Downloads::default())
         .manage(MusicFolders {
@@ -305,6 +306,7 @@ pub fn run() {
             );
             app.manage(audio::AudioEngine::start(app.handle().clone(), roots)?);
             library::trash::start_maintenance(app.handle());
+            external_tools::sync_server::LocalServer::supervise(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -321,6 +323,11 @@ pub fn run() {
             external_tools::ommr::check_ommr,
             external_tools::ommr::install_ommr,
             external_tools::ommr::test_ommr,
+            external_tools::sync_server::sync_server_status,
+            external_tools::sync_server::install_sync_server,
+            external_tools::sync_server::sync_server_set_enabled,
+            external_tools::sync_server::sync_server_devices,
+            external_tools::sync_server::sync_server_set_access,
             external_tools::lyrica_server::check_lyrica,
             external_tools::lyrica_server::install_lyrica,
             external_tools::ffmpeg::check_ffmpeg,
@@ -375,6 +382,12 @@ pub fn run() {
             library::queries::library_collections,
             library::queries::library_collection_tracks,
             library::playlists::library_playlists,
+            library::sync::library_sync_status,
+            library::sync::library_sync_discover,
+            library::sync::library_sync_check_access,
+            library::sync::library_sync_configure,
+            library::sync::library_sync_run,
+            library::sync::library_sync_cancel,
             library::playlists::library_play_playlist,
             library::playlists::library_playlist_transition_analysis,
             library::playlists::library_preview_playlist_transition,
@@ -389,6 +402,7 @@ pub fn run() {
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<external_tools::ommr::LocalServer>().shutdown();
+                app.state::<external_tools::sync_server::LocalServer>().shutdown();
                 app.state::<external_tools::lyrica_server::LocalLyrica>()
                     .shutdown();
             }

@@ -713,6 +713,30 @@
     vertical-align: middle;
   }
   .settings-switch .settings-beta-badge { margin-inline-start: 6px; }
+  .sync-folders, .sync-report { display: grid; min-width: 0; gap: 12px; }
+  .sync-folders > .settings-row { padding-top: 12px; border-top: 1px solid var(--yap-border); }
+  .sync-server-form, .sync-server-form > label { display: grid; min-width: 0; gap: 8px; }
+  .sync-server-form > .kit-button { justify-self: start; }
+  .settings-row .sync-destination { max-width: min(100%, 40ch); }
+  .sync-settings-dialog { width: min(780px, calc(100vw - 32px)); }
+  .sync-settings-dialog .kit-dialog-content { grid-template-rows: auto; }
+  .sync-modal-section, .sync-device-list { display: grid; min-width: 0; gap: 12px; }
+  .sync-modal-section + .sync-modal-section { padding-top: 16px; border-top: 1px solid var(--yap-border); }
+  .sync-modal-section > h3 { font-size: 20px; font-weight: 600; }
+  .sync-device-list > li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding-block: 8px; border-bottom: 1px solid var(--yap-border); }
+  .sync-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .sync-feedback { display: grid; gap: 8px; justify-items: start; }
+  .sync-feedback > .kit-progress { width: 100%; }
+  .sync-feedback[role='alert'] { color: var(--yap-error); }
+  .sync-report { padding-top: 16px; border-top: 1px solid var(--yap-border); }
+  .sync-report > header { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+  .sync-report h3 { font-size: 18px; font-weight: 600; }
+  .sync-report time, .sync-report-caption, .sync-metrics dt { color: var(--yap-muted); font-size: 14px; }
+  .sync-elapsed { flex: none; color: var(--yap-muted); font-variant-numeric: tabular-nums; }
+  .sync-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
+  .sync-metrics > div { display: grid; align-content: space-between; gap: 8px; min-width: 0; padding: 12px; border-radius: 10px; background: var(--yap-elevated); }
+  .sync-metrics dd { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .sync-warnings { display: grid; gap: 4px; padding-inline-start: 20px; list-style: disc; color: var(--yap-error); }
   .transition-slider { display: flex; align-items: center; gap: 12px; width: min(100%, 300px); }
   .transition-slider .kit-slider-track { background: var(--yap-border); }
   .transition-slider > span { flex: 0 0 48px; text-align: end; font-variant-numeric: tabular-nums; }

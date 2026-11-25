@@ -8,8 +8,10 @@ import { FlexLogo } from '@/components/FlexLogo';
 import { NavBar } from '@/components/NavBar';
 import { PlayerVideo } from '@/components/PlayerVideo';
 import { PlayerControls } from '@/components/PlayerControls';
+import { SyncAccessPrompt } from '@/components/SyncAccessPrompt';
 import { TrackContextMenu } from '@/components/TrackContextMenu';
 import { YtDlpGatekeeperDialog } from '@/components/YtDlpFeedback';
+import { startLibrarySync } from '@/stores/librarySyncStore';
 import { savePlayerStateOnExit } from '@/stores/playerStore';
 import { installGlobalLogHandlers } from '@/utils/appLogs';
 import { checkForAppUpdates } from '@/utils/checkForUpdates';
@@ -65,6 +67,10 @@ const RootLayout = () => {
     }, 400);
     return () => window.clearTimeout(timer);
   }, [currentPath, currentTrack, playing, lyricsEnabled, lyricsSource]);
+
+  useEffect(() => {
+    if (storeLoaded && !isSetup) return startLibrarySync();
+  }, [storeLoaded, isSetup]);
 
   const warmApp = async () => {
     const { hasMusicFolders } = await prepareStore();
@@ -136,6 +142,7 @@ const RootLayout = () => {
       <TrackContextMenu />
       <AppToaster />
       <YtDlpGatekeeperDialog />
+      {storeLoaded && <SyncAccessPrompt />}
     </>
   );
 };

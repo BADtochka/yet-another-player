@@ -4,6 +4,7 @@ pub(crate) mod external;
 mod ommr;
 pub mod playlists;
 pub mod queries;
+pub(crate) mod sync;
 pub(crate) mod trash;
 pub(crate) mod versions;
 
@@ -200,6 +201,8 @@ pub struct Library {
     database: PathBuf,
     active: ActiveJob,
     catalog_writer: Arc<tokio::sync::Mutex<()>>,
+    sync_job: Arc<tokio::sync::Mutex<()>>,
+    sync_cancelled: Arc<AtomicBool>,
     resolver: Arc<ommr::Worker>,
 }
 
@@ -342,10 +345,15 @@ impl Library {
         if version < 18 {
             catalog::storage::migrate(&mut connection)?;
         }
+        if version < 19 {
+            sync::migrate(&mut connection)?;
+        }
         Ok(Self {
             database,
             active: Arc::default(),
             catalog_writer: Arc::default(),
+            sync_job: Arc::default(),
+            sync_cancelled: Arc::default(),
             resolver: Arc::default(),
         })
     }
@@ -775,6 +783,7 @@ fn index_track(
     } else {
         tags.external_video_id = external::legacy_id(path).map(str::to_owned);
     }
+    sync::apply_imported_metadata(tx, key, &mut tags)?;
     edits::apply(tx, key, &mut tags)?;
     let id = tx.query_row(
         "INSERT INTO track (path, stamp, size, metadata)
@@ -899,7 +908,7 @@ fn scan(
             unavailable += 1;
             continue;
         };
-        if !canonical.is_dir() {
+        if !canonical.is_dir() || sync::inside_exchange(&canonical) {
             unavailable += 1;
             continue;
         }
@@ -909,7 +918,8 @@ fn scan(
             .into_iter()
             .filter_entry(|entry| {
                 entry.depth() == 0
-                    || !entry.file_name().to_string_lossy().starts_with('.')
+                    || (!entry.file_name().to_string_lossy().starts_with('.')
+                        && !sync::is_exchange_dir(entry.file_name()))
             });
         for entry in entries {
             if cancelled.load(Ordering::Acquire) {

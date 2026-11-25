@@ -3,6 +3,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { Switch } from '@/components/Switch';
 import { SettingsSection } from '@/components/Settings/SettingsSection';
+import { SyncServerSettings } from '@/components/Settings/SyncServerSettings';
 import { MetadataSettings } from '@/components/Settings/MetadataSettings';
 import { useSettingsStore } from '@/stores';
 import { GeniusSettings } from '@/components/Settings/GeniusSettings';
@@ -252,6 +253,7 @@ const ExternalToolRow = ({ description, title, tool }: ExternalToolRowProps) => 
 export const ExternalToolsSettings = () => {
   return (
     <SettingsSection title='Внешние инструменты'>
+      <SyncServerSettings />
       <section className='settings-tool-category' aria-labelledby='tools-media'>
         <h3 id='tools-media'>Поиск и обработка медиа</h3>
         <ExternalToolRow tool='yt-dlp' title='yt-dlp' description='Поиск и скачивание музыки из внешних источников' />
