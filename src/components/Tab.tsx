@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router';
 import { cn } from 'badlib';
 import { Icon, type IconName } from '@/components/Icons/Icon';
+import { Tooltip } from '@/components/Tooltip';
 import type { FileRouteTypes } from '@/routeTree.gen';
 
 export function Tab({ label, icon, to, className }: {
@@ -12,7 +13,7 @@ export function Tab({ label, icon, to, className }: {
   return (
     <Link to={to} aria-label={label} activeOptions={{ exact: true }} className={cn('app-nav-link', className)}>
       <Icon name={icon} />
-      <span className='kit-tooltip' aria-hidden='true'>{label}</span>
+      <Tooltip label={label} />
     </Link>
   );
 }

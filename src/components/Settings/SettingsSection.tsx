@@ -1,7 +1,9 @@
 import type { ComponentChildren } from 'preact';
+import { BetaBadge } from '@/components/Settings/BetaBadge';
 
-export function SettingsSection({ title, description, actions, children }: {
+export function SettingsSection({ title, beta, description, actions, children }: {
   title: string;
+  beta?: boolean;
   description?: string;
   actions?: ComponentChildren;
   children: ComponentChildren;
@@ -10,7 +12,7 @@ export function SettingsSection({ title, description, actions, children }: {
     <section className='settings-section'>
       <header>
         <div>
-          <h2>{title}</h2>
+          <h2>{title}{beta && <BetaBadge />}</h2>
           {description && <p>{description}</p>}
         </div>
         {actions && <div className='settings-header-actions'>{actions}</div>}
