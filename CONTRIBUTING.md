@@ -44,7 +44,9 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 bun run build:macos
 ```
 
-DMG появится в `src-tauri/target/universal-apple-darwin/release/bundle/dmg/`. Внутри находится приложение с ad-hoc подписью.
+DMG появится в `src-tauri/target/universal-apple-darwin/release/bundle/dmg/`. По умолчанию приложение подписывается ad hoc, поэтому macOS может заново запросить разрешение на глобальный жест громкости после установки новой сборки.
+
+Чтобы разрешение сохранялось между обновлениями, подписывай сборки сертификатом Developer ID Application той же команды Apple Developer и сохраняй идентификатор приложения `com.bad.yet-another-player`. Для локальной сборки укажи имя сертификата из связки ключей в `APPLE_SIGNING_IDENTITY`. [Подпись macOS-сборок в Tauri](https://v2.tauri.app/distribute/sign/macos/)
 
 ### Windows x64
 
