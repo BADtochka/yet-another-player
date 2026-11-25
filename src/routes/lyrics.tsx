@@ -11,7 +11,7 @@ import type { Track } from '@/types/Track';
 import { useLibraryTrack } from '@/hooks/useLibrary';
 import { usePlayerStore, useSettingsStore } from '@/stores';
 import { geniusReady, lyricaReady } from '@/stores/settingsStore';
-import { canSearchLyrics, getLocalLyrics, localLyricsText, lookupLyrics, lookupPreferredLyrics, lyricaError, lyricaProviders, parseLrc, saveProviderLyrics, type LocalLyricsData, type LyricsResult, type LyricaProvider } from '@/utils/lyrica';
+import { getLocalLyrics, localLyricsText, lookupLyrics, lookupPreferredLyrics, lyricaError, lyricaProviders, onlineLyricsSearch, parseLrc, saveProviderLyrics, type LocalLyricsData, type LyricsResult, type LyricaProvider } from '@/utils/lyrica';
 import { geniusError, geniusPageUrl } from '@/utils/genius';
 import { usePlayerVideo } from '@/utils/playerVideo';
 import { describePlayback } from '@/utils/trackMetadata';
@@ -91,15 +91,16 @@ function LyricsReader({ path, text, lines, offsetMs, onLyrics }: {
   );
 }
 
-function LocalLyrics({ track, automatic, online, onLyrics, onTryLrclib, offsetMs }: {
+function LocalLyrics({ track, automatic, onLyrics, onTryLrclib, offsetMs }: {
   track: Track;
   automatic: boolean;
-  online: boolean;
   offsetMs: number;
   onLyrics: (visible: boolean) => void;
   onTryLrclib?: () => void;
 }) {
   const [local, setLocal] = useState<LocalLyricsData | null>();
+  const text = localLyricsText(track, local ?? null, automatic);
+  const search = useSettingsStore((settings) => automatic && local ? onlineLyricsSearch(settings, text, local.fetched) : undefined);
   useEffect(() => {
     let active = true;
     const read = () => void getLocalLyrics(track.path)
@@ -115,10 +116,9 @@ function LocalLyrics({ track, automatic, online, onLyrics, onTryLrclib, offsetMs
     };
   }, [track.path]);
   if (local === undefined) return <div className='lyrics-status'><LoadingIndicator label='Чтение локального текста' /></div>;
-  const text = localLyricsText(track, local);
-  if (text) return <StoredLyrics path={track.path} text={text} offsetMs={offsetMs} onLyrics={onLyrics} />;
-  if (automatic && online && local) return <ProviderLookup track={track} provider='auto'
+  if (search && local) return <ProviderLookup track={track} provider='auto' fallbackText={search === 'synchronized' ? text : undefined}
     expectedFetched={local.fetched} offsetMs={offsetMs} onLyrics={onLyrics} onTryLrclib={onTryLrclib} />;
+  if (text) return <StoredLyrics path={track.path} text={text} offsetMs={offsetMs} onLyrics={onLyrics} />;
   return <div className='lyrics-status'>Для этого трека нет локального текста.</div>;
 }
 
@@ -127,10 +127,11 @@ function StoredLyrics({ path, text, offsetMs, onLyrics }: { path: string; text: 
   return <LyricsReader path={path} text={text} lines={lines} offsetMs={offsetMs} onLyrics={onLyrics} />;
 }
 
-function ProviderLookup({ track, provider, expectedFetched, onLyrics, onTryLrclib, offsetMs }: {
+function ProviderLookup({ track, provider, expectedFetched, fallbackText, onLyrics, onTryLrclib, offsetMs }: {
   track: Track;
   provider: Provider;
   expectedFetched?: string | null;
+  fallbackText?: string;
   offsetMs: number;
   onLyrics: (visible: boolean) => void;
   onTryLrclib?: () => void;
@@ -142,12 +143,17 @@ function ProviderLookup({ track, provider, expectedFetched, onLyrics, onTryLrcli
   >({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const artist = track.artists.join(', ');
+  const lyricaAvailable = useSettingsStore((settings) => provider === 'auto' && lyricaReady(settings));
+  const geniusAvailable = useSettingsStore((settings) => provider === 'auto' && !fallbackText && geniusReady(settings));
 
   useEffect(() => {
     let active = true;
     setState({ kind: 'loading' });
     if (!artist.trim()) return;
-    void (provider === 'auto' ? lookupPreferredLyrics(track) : lookupLyrics(track, provider)).then((result) => {
+    const lookup = provider === 'auto'
+      ? lookupPreferredLyrics(track, fallbackText ? 'synchronized' : 'preferred')
+      : lookupLyrics(track, provider);
+    void lookup.then((result) => {
       if (!active) return;
       if (!result) {
         setState({ kind: 'missing' });
@@ -170,8 +176,15 @@ function ProviderLookup({ track, provider, expectedFetched, onLyrics, onTryLrcli
       });
     });
     return () => { active = false; };
-  }, [track.path, track.name, artist, provider, expectedFetched, attempt]);
+  }, [track.path, track.name, artist, provider, expectedFetched, fallbackText, attempt, lyricaAvailable, geniusAvailable]);
 
+  if (fallbackText && state.kind !== 'found') {
+    return <div className='relative grid min-h-0 grid-rows-[minmax(0,1fr)]'>
+      <StoredLyrics path={track.path} text={fallbackText} offsetMs={offsetMs} onLyrics={onLyrics} />
+      {state.kind === 'loading' && artist.trim() &&
+        <LoadingIndicator label='Поиск синхронизированного текста' className='absolute right-2 top-2' />}
+    </div>;
+  }
   if (!artist.trim()) return <p className='lyrics-status'>Для поиска текста нужен исполнитель.</p>;
 
   if (state.kind === 'found') {
@@ -209,7 +222,6 @@ function Lyrics() {
   const videoPath = usePlayerVideo((state) => state.request?.path);
   const lyricaEnabled = useSettingsStore(lyricaReady);
   const geniusEnabled = useSettingsStore(geniusReady);
-  const online = useSettingsStore(canSearchLyrics);
   const preferred = useSettingsStore((state) => state.lyricsSource);
   const [selected, setSource] = useState<Source>('auto');
   const tryLrclib = useCallback(() => setSource('lrclib'), []);
@@ -250,7 +262,7 @@ function Lyrics() {
           <LyricsOffsetControl key={path} track={track} onPreview={previewOffset} />
         </div>}
         {source === 'auto' || source === 'local'
-          ? <LocalLyrics key={sourceKey} track={track} automatic={source === 'auto'} online={online} offsetMs={offsetMs} onLyrics={onLyrics}
+          ? <LocalLyrics key={sourceKey} track={track} automatic={source === 'auto'} offsetMs={offsetMs} onLyrics={onLyrics}
             onTryLrclib={lyricaEnabled ? tryLrclib : undefined} />
           : <ProviderLookup key={sourceKey} track={track} provider={source} offsetMs={offsetMs} onLyrics={onLyrics}
             onTryLrclib={lyricaEnabled ? tryLrclib : undefined} />}

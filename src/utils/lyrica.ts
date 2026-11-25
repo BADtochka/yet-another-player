@@ -40,9 +40,10 @@ export function lookupLyricaLyrics(title: string, artist: string, provider: Lyri
 export type LocalLyricsData = { sidecar: string | null; fetched: string | null };
 export const getLocalLyrics = (path: string) => invoke<LocalLyricsData | null>('get_lyrics', { path });
 
-export function localLyricsText(track: Track, local: LocalLyricsData | null) {
-  return [local?.sidecar, track.lyrics.join('\n'), local?.fetched]
-    .find((text) => text?.trim() && !isSingleTimedLine(text));
+export function localLyricsText(track: Track, local: LocalLyricsData | null, preferSynchronized = false) {
+  const texts = [local?.sidecar, track.lyrics.join('\n'), local?.fetched]
+    .filter((text): text is string => !!text?.trim() && !isSingleTimedLine(text));
+  return (preferSynchronized ? texts.find(hasSynchronizedLyrics) : undefined) ?? texts[0];
 }
 
 export function parseLrc(text: string) {
@@ -62,6 +63,10 @@ export function parseLrc(text: string) {
 export function isSingleTimedLine(text: string) {
   const trimmed = text.trim();
   return !/[\r\n]/.test(trimmed) && parseLrc(trimmed).length === 1;
+}
+
+function hasSynchronizedLyrics(text: string) {
+  return parseLrc(text).some(({ content }) => !!content);
 }
 
 export function readProviderLyrics(lyrics: LyricaLyrics) {
@@ -104,18 +109,24 @@ export function lookupAutomaticLyrics(track: Track) {
   const pending = automaticLookups.get(key);
   if (pending) return pending;
   const request = (async () => {
-    for (const provider of ['auto', 'lrclib', 'lrcmux'] as const) {
-      const result = await lookupLyricaLyrics(track.name, artist, provider);
-      if (!result || result.instrumental) {
-        if (result?.instrumental) return result;
-        continue;
+    let failure: unknown;
+    let instrumental: LyricaLyrics | undefined;
+    for (const provider of ['lrclib', 'auto', 'lrcmux'] as const) {
+      try {
+        const result = await lookupLyricaLyrics(track.name, artist, provider);
+        if (!result) continue;
+        if (result.instrumental) instrumental ??= result;
+        const parsed = parseLrc(result.text);
+        const lines = parsed.filter(({ content }) => content).length > 1
+          ? parsed.map(({ time, content }) => ({ startMs: Math.round(time * 1000), text: content }))
+          : result.lines;
+        if (lines.filter((line) => line.text.trim()).length > 1) return { ...result, lines };
+      } catch (error) {
+        failure ??= error;
       }
-      const parsed = parseLrc(result.text);
-      const lines = parsed.length > 1
-        ? parsed.map(({ time, content }) => ({ startMs: Math.round(time * 1000), text: content }))
-        : result.lines;
-      if (lines.filter((line) => line.text.trim()).length > 1) return { ...result, lines };
     }
+    if (instrumental) return instrumental;
+    if (failure !== undefined) throw failure;
     return null;
   })().finally(() => automaticLookups.delete(key));
   automaticLookups.set(key, request);
@@ -145,6 +156,17 @@ export function canSearchLyrics(settings: ReturnType<typeof useSettingsStore.get
   return settings.lyricsSource !== 'local' && (lyricaReady(settings) || geniusReady(settings));
 }
 
+type LyricsSearch = 'preferred' | 'synchronized';
+
+export function onlineLyricsSearch(settings: ReturnType<typeof useSettingsStore.getState>, text: string | undefined,
+  fetched: string | null): LyricsSearch | undefined {
+  if (!canSearchLyrics(settings)) return;
+  if (!text) return 'preferred';
+  if (settings.lyricsSource === 'auto' && lyricaReady(settings) && fetched
+    && text.replace(/\r\n?/g, '\n').trim() === fetched.replace(/\r\n?/g, '\n').trim()
+    && !hasSynchronizedLyrics(text)) return 'synchronized';
+}
+
 export async function lookupLyrics(track: Track, provider: Exclude<LyricsSource, 'local'>): Promise<LyricsResult | null> {
   if (provider === 'genius') {
     const text = await geniusLyrics(track.name, track.artists);
@@ -162,13 +184,15 @@ export async function lookupLyrics(track: Track, provider: Exclude<LyricsSource,
 
 const preferredLookups = new Map<string, Promise<LyricsResult | null>>();
 
-export function lookupPreferredLyrics(track: Track) {
+export function lookupPreferredLyrics(track: Track, search: LyricsSearch = 'preferred') {
   const settings = useSettingsStore.getState();
   if (!canSearchLyrics(settings) || !track.artists.join('').trim()) return Promise.resolve(null);
-  const order = [...new Set([settings.lyricsSource, 'auto', 'genius'] as const)]
+  if (search === 'synchronized' && settings.lyricsSource !== 'auto') return Promise.resolve(null);
+  const sources: LyricsSource[] = search === 'synchronized' ? ['auto'] : [settings.lyricsSource, 'auto', 'genius'];
+  const order = [...new Set(sources)]
     .filter((source): source is Exclude<LyricsSource, 'local'> => source !== 'local'
       && (source === 'genius' ? geniusReady(settings) : lyricaReady(settings)));
-  const key = JSON.stringify([track.path, track.name, track.artists, order]);
+  const key = JSON.stringify([track.path, track.name, track.artists, search, order]);
   const active = preferredLookups.get(key);
   if (active) return active;
 
@@ -182,7 +206,9 @@ export function lookupPreferredLyrics(track: Track) {
         const result = await lookupLyrics(track, provider);
         const latest = useSettingsStore.getState();
         if (latest.lyricsSource !== settings.lyricsSource) return null;
-        if (result && (provider === 'genius' ? geniusReady(latest) : lyricaReady(latest))) return result;
+        if (provider === 'genius' && settings.lyricsSource === 'auto' && !lyricaReady(settings) && lyricaReady(latest)) return null;
+        if (result && (search !== 'synchronized' || (!result.instrumental && result.content.lines.length > 0))
+          && (provider === 'genius' ? geniusReady(latest) : lyricaReady(latest))) return result;
       } catch (reason) {
         const error: NonNullable<typeof failure> = { reason, provider: provider === 'genius' ? 'genius' : 'lyrica' };
         if (provider === 'genius' && geniusPageUrl(reason)) failure = error;

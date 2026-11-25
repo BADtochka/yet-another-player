@@ -20,8 +20,8 @@ import { installGlobalLogHandlers } from '@/utils/appLogs';
 import { checkForAppUpdates } from '@/utils/checkForUpdates';
 import { prepareStore } from '@/utils/prepareStore';
 import { usePlayerStore, useSettingsStore } from '@/stores';
-import { getExternalToolStatus } from '@/utils/externalTools';
-import { canSearchLyrics, getLocalLyrics, localLyricsText, lookupPreferredLyrics, saveProviderLyrics } from '@/utils/lyrica';
+import { geniusReady, lyricaReady } from '@/stores/settingsStore';
+import { getLocalLyrics, localLyricsText, lookupPreferredLyrics, onlineLyricsSearch, saveProviderLyrics } from '@/utils/lyrica';
 import { usePlayerVideo } from '@/utils/playerVideo';
 import { toast } from '@/utils/toast';
 
@@ -35,7 +35,8 @@ const RootLayout = () => {
   const currentPath = usePlayerStore((state) => state.currentTrackPath);
   const currentTrack = usePlayerStore((state) => state.currentTrack);
   const playing = usePlayerStore((state) => state.playing);
-  const lyricsEnabled = useSettingsStore(canSearchLyrics);
+  const lyricaEnabled = useSettingsStore(lyricaReady);
+  const geniusEnabled = useSettingsStore(geniusReady);
   const lyricsSource = useSettingsStore((state) => state.lyricsSource);
   const separateVideoLyrics = useSettingsStore((state) => state.separateVideoLyrics);
   const suspendHiddenVideo = useSettingsStore((state) => state.suspendHiddenVideo);
@@ -58,22 +59,29 @@ const RootLayout = () => {
   }, []);
 
   useEffect(() => {
-    if (!lyricsEnabled || !playing || !currentTrack || currentTrack.path !== currentPath) return;
-    const key = JSON.stringify([currentTrack.path, currentTrack.name, currentTrack.artists, lyricsSource]);
+    if (lyricsSource === 'local' || (!lyricaEnabled && !geniusEnabled)
+      || !playing || !currentTrack || currentTrack.path !== currentPath) return;
+    const key = JSON.stringify([currentTrack.path, currentTrack.name, currentTrack.artists, lyricsSource, lyricaEnabled, geniusEnabled]);
     if (lastLyricsLookup.current === key) return;
     const timer = window.setTimeout(() => {
       lastLyricsLookup.current = key;
       void (async () => {
         const local = await getLocalLyrics(currentTrack.path);
-        if (!local || localLyricsText(currentTrack, local) || !canSearchLyrics(useSettingsStore.getState())) return;
-        const result = await lookupPreferredLyrics(currentTrack);
-        if (result && canSearchLyrics(useSettingsStore.getState()) && useSettingsStore.getState().lyricsSource === lyricsSource) {
+        const settings = useSettingsStore.getState();
+        if (!local || settings.lyricsSource !== lyricsSource) return;
+        const text = localLyricsText(currentTrack, local, true);
+        const search = onlineLyricsSearch(settings, text, local.fetched);
+        if (!search) return;
+        const result = await lookupPreferredLyrics(currentTrack, search);
+        const latest = useSettingsStore.getState();
+        if (result && latest.lyricsSource === lyricsSource
+          && lyricaReady(latest) === lyricaEnabled && geniusReady(latest) === geniusEnabled) {
           await saveProviderLyrics(currentTrack.path, result.content, local.fetched);
         }
       })().catch((error) => console.warn('Could not find track lyrics', error));
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [currentPath, currentTrack, playing, lyricsEnabled, lyricsSource]);
+  }, [currentPath, currentTrack, playing, lyricaEnabled, geniusEnabled, lyricsSource]);
 
   useEffect(() => {
     if (storeLoaded && !isSetup) return startLibrarySync();
@@ -81,7 +89,6 @@ const RootLayout = () => {
 
   const warmApp = async () => {
     const { hasMusicFolders } = await prepareStore();
-    void getExternalToolStatus('lyrica').catch((error) => console.warn('Could not check local Lyrica', error));
     setStoreLoaded(true);
 
     if (!hasMusicFolders && pathname !== '/setup') {

@@ -2,7 +2,7 @@ import { loadCatalog } from '@/utils/parseMusic';
 import { startPlayer } from '@/stores/playerStore';
 import { settingsStoreHandler, useSettingsStore } from '@/stores/settingsStore';
 import { registerMusicRoots } from '@/utils/musicFolders';
-import { loadDisabledTools } from '@/utils/externalTools';
+import { getExternalToolStatus, loadDisabledTools } from '@/utils/externalTools';
 import { geniusIsConfigured } from '@/utils/genius';
 
 let started = false;
@@ -20,6 +20,7 @@ export const startStores = async () => {
   await settingsStoreHandler.start();
   await loadDisabledTools().catch((error) => console.warn('Could not read external tool settings', error));
   void geniusIsConfigured().catch(() => undefined);
+  const lyricaStatus = getExternalToolStatus('lyrica').catch((error) => console.warn('Could not check local Lyrica', error));
 
   const { musicFolders, setMusicFolders } = useSettingsStore.getState();
   setMusicFolders(musicFolders);
@@ -31,7 +32,7 @@ export const startStores = async () => {
   });
 
   await registerMusicRoots(useSettingsStore.getState().musicFolders);
-  await loadCatalog();
+  await Promise.all([loadCatalog(), lyricaStatus]);
   await startPlayer();
 };
 
