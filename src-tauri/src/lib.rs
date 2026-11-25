@@ -13,8 +13,11 @@ mod genius;
 mod library;
 mod linux_audio;
 mod lyrica;
+#[cfg(target_os = "macos")]
+mod page_swipe;
 mod track_lyrics;
 mod updates;
+mod volume_gesture;
 
 pub struct MusicFolders {
     canonical: Arc<Mutex<Vec<PathBuf>>>,
@@ -281,10 +284,16 @@ pub fn run() {
     let audio_environment = linux_audio::configure();
     let roots = Arc::new(Mutex::new(Vec::new()));
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder =
+        builder.append_invoke_initialization_script("window.__YAP_NATIVE_PAGE_SWIPE__ = true;");
+
+    builder
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(audio_environment)
+        .manage(volume_gesture::VolumeGesture::default())
         .manage(external_tools::ommr::LocalServer::default())
         .manage(external_tools::sync_server::LocalServer::default())
         .manage(external_tools::lyrica_server::LocalLyrica::default())
@@ -297,6 +306,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                page_swipe::install(&window)?;
+            }
             let data = app.path().app_data_dir()?;
             app.manage(external_tools::enabled::DisabledTools::load(&data));
             let catalog = data.join("library.sqlite3");
@@ -305,6 +318,7 @@ pub fn run() {
                     .map_err(|error| std::io::Error::other(error.to_string()))?,
             );
             app.manage(audio::AudioEngine::start(app.handle().clone(), roots)?);
+            volume_gesture::start(app.handle());
             library::trash::start_maintenance(app.handle());
             external_tools::sync_server::LocalServer::supervise(app.handle().clone());
             Ok(())
@@ -315,6 +329,10 @@ pub fn run() {
             updates::check_arch_update,
             updates::download_arch_update,
             audio::audio_control,
+            volume_gesture::configure_volume_gesture,
+            volume_gesture::volume_gesture_scroll,
+            #[cfg(not(target_os = "macos"))]
+            volume_gesture::volume_overlay_ready,
             audio::info::track_audio_info,
             external_tools::check_yt_dlp,
             external_tools::get_yt_dlp_location,

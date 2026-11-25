@@ -10,6 +10,7 @@ import { SwitchSettings } from '@/components/Settings/SwitchSettings';
 import { TransitionSettings } from '@/components/Settings/TransitionSettings';
 import { TrashSettings } from '@/components/Settings/TrashSettings';
 import { UpdateSettings } from '@/components/Settings/UpdateSettings';
+import { VolumeGestureSettings } from '@/components/Settings/VolumeGestureSettings';
 import { useSettingsStore } from '@/stores';
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -118,6 +119,7 @@ function AudioSettings() {
         { label: 'Громко', value: 'loud' },
       ]} value={volumeNormLevel} onChange={setVolumeNormLevel} />
     </SwitchSettings>
+    <VolumeGestureSettings />
     <TransitionSettings />
   </SettingsSection>;
 }

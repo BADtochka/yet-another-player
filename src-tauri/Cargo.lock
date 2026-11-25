@@ -3085,6 +3085,7 @@ dependencies = [
  "bitflags 2.13.0",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 
@@ -6883,6 +6884,9 @@ name = "yet-another-player"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
+ "core-foundation 0.10.1",
+ "core-graphics",
  "dom_query",
  "dunce",
  "flate2",
@@ -6893,6 +6897,10 @@ dependencies = [
  "libc",
  "lofty",
  "lzma-rust2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quartz-core",
  "opus-decoder",
  "playwire",
  "rand 0.9.4",
@@ -6918,6 +6926,7 @@ dependencies = [
  "walkdir",
  "windows 0.62.2",
  "windows-sys 0.61.2",
+ "x11-dl",
  "zip",
 ]
 

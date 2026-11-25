@@ -83,7 +83,8 @@
     position: relative;
     grid-area: content;
     min-width: 0;
-    overflow: auto;
+    overflow: hidden auto;
+    overscroll-behavior-x: none;
     padding-inline: 16px;
     scrollbar-width: thin;
     scrollbar-color: var(--yap-accent) var(--yap-surface);
@@ -95,6 +96,52 @@
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
     padding-block-end: 16px;
+  }
+
+  .page-swipe-feedback {
+    position: fixed;
+    z-index: 13;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .page-swipe-arrow {
+    --page-swipe-pull: 0;
+    position: absolute;
+    top: calc(50% - 24px);
+    display: grid;
+    width: 56px;
+    height: 48px;
+    align-items: center;
+    padding-inline: 8px;
+    background: var(--yap-elevated);
+    color: var(--yap-text);
+    opacity: min(1, calc(var(--page-swipe-pull) * 3));
+    transform: translateX(calc((1 - var(--page-swipe-pull)) * var(--page-swipe-exit)));
+    transition: transform 130ms ease-out, opacity 130ms ease-out, background-color 80ms ease-out;
+  }
+  .page-swipe-arrow[data-edge='left'] {
+    --page-swipe-exit: -100%;
+    left: 0;
+    justify-items: end;
+    border-radius: 0 24px 24px 0;
+  }
+  .page-swipe-arrow[data-edge='right'] {
+    --page-swipe-exit: 100%;
+    right: 0;
+    justify-items: start;
+    border-radius: 24px 0 0 24px;
+  }
+  .page-swipe-arrow[data-edge='left'] > svg { rotate: -90deg; }
+  .page-swipe-arrow[data-edge='right'] > svg { rotate: 90deg; }
+  .page-swipe-feedback[data-direction='back'] > [data-edge='left'],
+  .page-swipe-feedback[data-direction='forward'] > [data-edge='right'] {
+    --page-swipe-pull: var(--page-swipe-progress);
+    transition-duration: 45ms, 45ms, 80ms;
+  }
+  .page-swipe-feedback[data-committed] > .page-swipe-arrow { background: var(--yap-accent); }
+  @media (prefers-reduced-motion: reduce) {
+    .page-swipe-arrow { transform: none; }
   }
 
   .app-shell[data-setup='true'] .app-content { padding: 0; background: var(--yap-surface); }

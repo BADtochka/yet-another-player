@@ -2,14 +2,17 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { createRootRoute, Outlet, useLocation, useNavigate } from '@tanstack/react-router';
 
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { usePageSwipe } from '@/hooks/usePageSwipe';
 import { listenForCatalogChanges } from '@/hooks/useLibrary';
 import { AppToaster } from '@/components/AppToaster';
 import { FlexLogo } from '@/components/FlexLogo';
+import { Icon } from '@/components/Icons/Icon';
 import { NavBar } from '@/components/NavBar';
 import { PlayerVideo } from '@/components/PlayerVideo';
 import { PlayerControls } from '@/components/PlayerControls';
 import { SyncAccessPrompt } from '@/components/SyncAccessPrompt';
 import { TrackContextMenu } from '@/components/TrackContextMenu';
+import { VolumeGesture } from '@/components/VolumeGesture';
 import { YtDlpGatekeeperDialog } from '@/components/YtDlpFeedback';
 import { startLibrarySync } from '@/stores/librarySyncStore';
 import { savePlayerStateOnExit } from '@/stores/playerStore';
@@ -42,6 +45,10 @@ const RootLayout = () => {
   const lyricsWithVideo = pathname === '/lyrics' && !videoSuspended && !!videoPath && videoPath === currentPath;
   const isSetup = pathname === '/setup';
   const hasToolbar = !isSetup && pathname !== '/settings';
+  const shell = useRef<HTMLDivElement>(null);
+  const page = useRef<HTMLDivElement>(null);
+  const nativePageSwipe = '__YAP_NATIVE_PAGE_SWIPE__' in window;
+  const swipeFeedback = usePageSwipe(shell, page, storeLoaded && !isSetup, nativePageSwipe);
 
   useEffect(() => {
     const updateVisibility = () => setPageHidden(document.hidden);
@@ -130,14 +137,19 @@ const RootLayout = () => {
 
   return (
     <>
-      <div className='app-shell' data-setup={isSetup} data-toolbar={hasToolbar}
+      <div ref={shell} className='app-shell' data-setup={isSetup} data-toolbar={hasToolbar}
         data-video-lyrics={lyricsWithVideo && separateVideoLyrics ? 'separate' : undefined}>
         {!isSetup && <NavBar />}
         <main className='app-content' data-lyrics-with-video={lyricsWithVideo}>
-          <div className='app-page'>{storeLoaded ? <Outlet /> : <FlexLogo />}</div>
+          <div ref={page} className='app-page'>{storeLoaded ? <Outlet /> : <FlexLogo />}</div>
         </main>
         <PlayerVideo suspended={videoSuspended} />
         <PlayerControls ready={storeLoaded} />
+        {storeLoaded && <VolumeGesture />}
+        <div ref={swipeFeedback} className='page-swipe-feedback' aria-hidden='true'>
+          <span className='page-swipe-arrow' data-edge='left'><Icon name='ChevronUp' /></span>
+          <span className='page-swipe-arrow' data-edge='right'><Icon name='ChevronUp' /></span>
+        </div>
       </div>
       <TrackContextMenu />
       <AppToaster />

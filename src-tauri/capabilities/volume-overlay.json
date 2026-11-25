@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "volume-overlay",
+  "description": "Receives the player volume in its indicator window",
+  "windows": ["volume-overlay"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

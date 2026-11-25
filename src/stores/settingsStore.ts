@@ -16,6 +16,8 @@ type SettingsState = Settings & {
   setMusicFolders: (folders: string[]) => void;
   setVolumeNormLevel: (level: Settings['volumeNormLevel']) => void;
   setVolumeNormEnabled: (enabled: Settings['volumeNormEnabled']) => void;
+  setVolumeGesture: (binding: Settings['volumeGesture']) => void;
+  setVolumeGestureEnabled: (enabled: boolean) => void;
   setRestartOnPrevious: (enabled: boolean) => void;
   setTransitions: (settings: Partial<TransitionSettings>) => void;
 };
@@ -57,6 +59,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setResolver: (config) => set({ ...config, resolverUrl: config.resolverUrl.trim() }),
   volumeNormEnabled: false,
   volumeNormLevel: 'normal',
+  volumeGesture: null,
+  setVolumeGesture: (volumeGesture) => set((state) => ({
+    volumeGesture,
+    volumeGestureEnabled: volumeGesture && !state.volumeGesture ? true : state.volumeGestureEnabled,
+  })),
+  setVolumeGestureEnabled: (volumeGestureEnabled) => set({ volumeGestureEnabled }),
   restartOnPrevious: true,
   setRestartOnPrevious: (restartOnPrevious) => set({ restartOnPrevious }),
   transitions: {
@@ -96,7 +104,7 @@ export const geniusReady = (settings: SettingsState) => settings.geniusConfigure
 
 export const settingsStoreHandler = createTauriStore('settings', useSettingsStore, {
   saveOnChange: true,
-  filterKeys: ['showAudioInfo', 'separateVideoLyrics', 'suspendHiddenVideo', 'lyricaEnabled', 'musicFolders', 'volumeNormLevel', 'volumeNormEnabled', 'restartOnPrevious', 'resolverUrl', 'resolverMode', 'resolverSources', 'metadataSource', 'showExternalAlbumTracks', 'lyricsSource', 'transitions'],
+  filterKeys: ['showAudioInfo', 'separateVideoLyrics', 'suspendHiddenVideo', 'lyricaEnabled', 'musicFolders', 'volumeNormLevel', 'volumeNormEnabled', 'volumeGesture', 'volumeGestureEnabled', 'restartOnPrevious', 'resolverUrl', 'resolverMode', 'resolverSources', 'metadataSource', 'showExternalAlbumTracks', 'lyricsSource', 'transitions'],
   filterKeysStrategy: 'pick',
 });
 

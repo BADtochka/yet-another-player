@@ -29,6 +29,14 @@ export default defineConfig(async ({ mode }) => {
       tailwindcss(),
       preact(),
     ],
+    build: {
+      rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          volumeOverlay: path.resolve(__dirname, 'volume-overlay.html'),
+        },
+      },
+    },
 
     // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
     //

@@ -26,6 +26,7 @@ export type ResolverMode = 'off' | 'local' | 'remote';
 export type MetadataSource = 'auto' | 'ommr' | 'itunes' | 'musicBrainz' | 'genius' | 'off';
 export type LyricsSource = 'auto' | 'local' | import('@/utils/lyrica').LyricaProvider | 'genius';
 export type ToolName = 'yt-dlp' | 'ffmpeg' | 'ommr' | 'lyrica' | 'genius';
+export type VolumeGestureBinding = { modifiers: number; key: string | null };
 
 export type Settings = {
   metadataSource: MetadataSource;
@@ -41,6 +42,8 @@ export type Settings = {
   musicFolders: string[];
   volumeNormEnabled: boolean;
   volumeNormLevel: VolumeNormalizationLevel;
+  volumeGesture: VolumeGestureBinding | null;
+  volumeGestureEnabled?: boolean;
   restartOnPrevious: boolean;
   transitions: TransitionSettings;
 };

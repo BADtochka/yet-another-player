@@ -1,6 +1,7 @@
 import { Button } from '@/components/Button';
 import { Slider } from '@/components/Slider';
 import { useEffect, useRef } from 'preact/hooks';
+import { wheelVolumeChange } from '@/utils/volumeWheel';
 
 export type VolumeBarProps = {
   value: number;
@@ -25,8 +26,6 @@ const volumeIcon = (value: number) => {
 };
 
 const VOLUME_STEP = 0.1;
-const VOLUME_PER_PIXEL = 0.0008;
-const VOLUME_PER_LINE = 0.025;
 const WHEEL_GESTURE_GAP_MS = 180;
 
 const clampVolume = (value: number) => Math.min(1, Math.max(0, value));
@@ -38,6 +37,7 @@ export const VolumeBar = ({ value, className, onChange }: VolumeBarProps) => {
   const wheelRef = useRef<{ target: number; sent: number; lastEventAt: number }>();
   const wheelFrameRef = useRef<number>();
   const icon = volumeIcon(value);
+  const muteLabel = value === 0 ? 'Включить звук' : 'Выключить звук';
 
   valueRef.current = value;
 
@@ -54,15 +54,11 @@ export const VolumeBar = ({ value, className, onChange }: VolumeBarProps) => {
     }
 
     const onWheel = (event: WheelEvent) => {
-      const mode = event.deltaMode;
-      const delta = event.deltaY;
-      if (event.ctrlKey || !Number.isFinite(delta) || delta === 0 || Math.abs(event.deltaX) > Math.abs(delta)) return;
+      const change = event.ctrlKey ? 0 : wheelVolumeChange(event);
+      if (!change) return;
       event.preventDefault();
       event.stopPropagation();
 
-      const scale = mode === WheelEvent.DOM_DELTA_LINE ? VOLUME_PER_LINE
-        : mode === WheelEvent.DOM_DELTA_PAGE ? VOLUME_STEP : VOLUME_PER_PIXEL;
-      const change = -Math.sign(delta) * Math.min(VOLUME_STEP, Math.abs(delta) * scale);
       const now = performance.now();
       const previous = wheelRef.current;
       // Native snapshots may arrive after the next event in the same gesture.
@@ -111,7 +107,7 @@ export const VolumeBar = ({ value, className, onChange }: VolumeBarProps) => {
   return (
     <div className={className ?? 'flex items-center gap-2'}>
       <Button variant='ghost' size='icon' className='player-tool' icon={icon}
-        aria-label={value === 0 ? 'Включить звук' : 'Выключить звук'} onClick={onMuteToggle} />
+        aria-label={muteLabel} tooltip={muteLabel} onClick={onMuteToggle} />
       <div ref={sliderRef} className='volume-slider'>
         <Slider
           label='Громкость'

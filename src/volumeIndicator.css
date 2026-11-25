@@ -1,0 +1,40 @@
+@layer components {
+  :root[data-volume-overlay] { --font-onest: Onest, system-ui, sans-serif; background: transparent; }
+  :root[data-volume-overlay] body { background: transparent; }
+  .volume-gesture-indicator {
+    display: grid;
+    box-sizing: border-box;
+    width: 236px;
+    height: 74px;
+    grid-template-columns: 34px minmax(0, 1fr) 36px;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--yap-border);
+    border-radius: 12px;
+    background: var(--yap-surface);
+    color: var(--yap-text);
+    font-size: 13px;
+  }
+  .volume-gesture-icon {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border-radius: 8px;
+    background: var(--yap-accent);
+  }
+  .volume-gesture-meter { display: grid; gap: 7px; }
+  .volume-gesture-meter progress {
+    width: 100%;
+    height: 5px;
+    overflow: hidden;
+    border-radius: 3px;
+    appearance: none;
+    background: var(--yap-elevated);
+    color: var(--yap-accent-hover);
+  }
+  .volume-gesture-meter progress::-webkit-progress-bar { background: var(--yap-elevated); }
+  .volume-gesture-meter progress::-webkit-progress-value { background: var(--yap-accent-hover); }
+  .volume-gesture-indicator strong { text-align: end; font-variant-numeric: tabular-nums; }
+}
